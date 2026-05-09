@@ -632,7 +632,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbzqe33qB41LsIaME9nNbYH00ZUN8nzO1NIoiJJIkjDT1yJZNCESRG1dmlp1dSOQ98iOZA/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzMszte99D7IZ48avLM6lbNu7wfDz3bYKXz0Dd-TS5ejlmWtA_R7UT5rdSIvhBkaaqtzA/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -1364,95 +1364,278 @@ async function assignTicket(ticketId, chassisNo) {
 // REPAIR QUEUE & WORK
 // ═══════════════════════════════════════════════════════════
 async function loadRepairQueue() {
-  const res = await api('getMyRepairs', { mobile: currentUser.mobile });
+  const isTech = currentUser.role.toLowerCase().includes('technician') || currentUser.role === 'Technician';
+  const MANAGER_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
+  const isManager = MANAGER_ROLES.some(r => currentUser.role === r || currentUser.role.includes(r));
+
+  let res;
+  if (isTech && !isManager) {
+    // Technician sees only their assigned tickets
+    res = await api('getMyRepairs', { mobile: currentUser.mobile });
+  } else {
+    // Managers/leads see all active repair tickets for their hub
+    const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+    res = await api('getDamageTickets', { hub });
+    // Filter to active repair statuses only
+    const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
+    res.tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
+  }
+
   const tickets = res.tickets || [];
-  document.getElementById('repair-queue-content').innerHTML = tickets.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No repairs assigned to you</p>'
-    : tickets.map(t => `
-      <div class="ticket-card" onclick="openRepairWork('${t.Ticket_ID}')">
-        <div class="ticket-header">
-          <span class="ticket-id">${t.Ticket_ID}</span>
-          <span class="status-badge ${statusClass(t.Status)}">${t.Status}</span>
-        </div>
-        <div class="ticket-meta">
-          <span class="tag tag-blue">${t.OEM}</span>
-          <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
-        </div>
-        <div class="ticket-title">${t.Chassis_No}</div>
-        <div class="ticket-sub">Rider: ${t.Rider_ID} · ₹${Number(t.Damage_Amount||0).toLocaleString('en-IN')}</div>
-      </div>`
-    ).join('');
+  document.getElementById('repair-queue-content').innerHTML = `
+    <div style="font-size:12px;color:var(--text2);margin-bottom:12px">
+      ${isTech && !isManager ? 'Tickets assigned to you' : 'All active repairs · ' + tickets.length + ' vehicles'}
+    </div>` +
+    (tickets.length === 0
+      ? '<p style="text-align:center;color:var(--text2);padding:40px">No active repair tickets</p>'
+      : tickets.map(t => {
+          const statusColors = {
+            'Assigned':              'tag-blue',
+            'Parts Requested':       'tag-yellow',
+            'Parts Approved':        'tag-green',
+            'In Repair':             'tag-orange',
+          };
+          const sc = statusColors[t.Status] || 'tag-grey';
+          return `
+          <div class="ticket-card" onclick="openRepairWork('${t.Ticket_ID}')">
+            <div class="ticket-header">
+              <span class="ticket-id">${t.Ticket_ID}</span>
+              <span class="tag ${sc}" style="font-size:11px;padding:3px 10px">${t.Status}</span>
+            </div>
+            <div class="ticket-meta">
+              <span class="tag tag-blue">${t.OEM}</span>
+              <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
+              <span class="tag tag-grey">${t.Hub}</span>
+            </div>
+            <div class="ticket-title">${t.Chassis_No}</div>
+            <div class="ticket-sub">Assigned To: ${t.Assigned_To||'—'} · Rider: ${t.Rider_ID}</div>
+            <div class="ticket-sub" style="margin-top:2px">${fmtDate(t.Assigned_At)}</div>
+          </div>`;
+        }).join(''));
 }
 
-async function openRepairWork(ticketId) {
-  const res = await api('getDamageDetail', { ticketId });
-  if (res.error) { toast(res.error,'error'); return; }
-  currentRepairTicket = res;
-  const t = res.ticket, parts = res.parts || [];
-  const oem = t.OEM || 'Ampere';
+// ═══════════════════════════════════════════════════════════
+// REPAIR WORKFLOW — FULL NEW FLOW
+// Assigned → Raise Part Request → Approved → Start Repair → Complete → QC
+// ═══════════════════════════════════════════════════════════
 
+async function openRepairWork(ticketId) {
+  document.getElementById('repair-work-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div><span>Loading job card...</span></div>';
   showScreen('repair-work');
 
-  // Reset repair parts selection
+  const [detailRes, prRes, evRes] = await Promise.all([
+    api('getDamageDetail',  { ticketId }),
+    api('getPartsRequests', { ticketId }),
+    api('getRepairEvents',  { ticketId }),
+  ]);
+
+  if (detailRes.error) { toast(detailRes.error,'error'); return; }
+  currentRepairTicket = detailRes;
   daSelectedParts = [];
+
+  const t      = detailRes.ticket;
+  const parts  = detailRes.parts || [];
+  const preqs  = (prRes.requests || []);
+  const events = (evRes.events || []);
+  const oem    = normaliseOEM(t.OEM || 'Ampere');
+  const isTech = currentUser.role.toLowerCase().includes('technician') || currentUser.role === 'Technician';
+  const isViewer = !isTech; // admin/lead/service head viewing
+
+  // ── STATUS TIMELINE ─────────────────────────────────────
+  const statusSteps = ['Assigned','Parts Requested','Parts Approved','In Repair','QC Pending','RFD'];
+  const curIdx = statusSteps.indexOf(t.Status);
+  const timelineHtml = `
+    <div style="display:flex;align-items:center;gap:0;margin-bottom:16px;overflow-x:auto;padding-bottom:4px">
+      ${statusSteps.map((s,i) => `
+        <div style="display:flex;align-items:center;flex-shrink:0">
+          <div style="text-align:center;min-width:72px">
+            <div style="width:28px;height:28px;border-radius:50%;margin:0 auto 4px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+              background:${i<curIdx?'var(--success)':i===curIdx?'var(--primary)':'var(--surface3)'};
+              color:${i<=curIdx?'#fff':'var(--text3)'}">
+              ${i<curIdx?'✓':i+1}
+            </div>
+            <div style="font-size:9px;color:${i===curIdx?'var(--primary)':i<curIdx?'var(--success)':'var(--text3)'};font-weight:${i===curIdx?'700':'400'};line-height:1.2">${s}</div>
+          </div>
+          ${i<statusSteps.length-1?`<div style="height:2px;width:16px;flex-shrink:0;background:${i<curIdx?'var(--success)':'var(--border)'}"></div>`:''}
+        </div>`).join('')}
+    </div>`;
+
+  // ── TIMESTAMPS from events ───────────────────────────────
+  const evMap = {};
+  events.forEach(e => { evMap[e.Event_Type] = e.Timestamp; });
+  const tsHtml = `
+    <div class="detail-section">
+      <h3>⏱ Timeline</h3>
+      ${[
+        ['Assigned',       evMap['REPAIR_ASSIGNED']   || t.Assigned_At],
+        ['Parts Requested',evMap['PARTS_REQ_RAISED']],
+        ['Parts Approved', evMap['PARTS_REQUEST_APPROVED'] || evMap['PARTS_REQ_APPROVED']],
+        ['Repair Started', evMap['REPAIR_STARTED']],
+        ['Repair Complete',evMap['REPAIR_COMPLETE']],
+        ['QC Passed',      evMap['QC_PASS']],
+        ['RFD Marked',     evMap['IOT_RFD_MARKED']],
+      ].map(([label,ts]) => ts ? `<div class="detail-row"><span>${label}</span><span style="color:var(--success);font-size:12px">${fmtDate(ts)}</span></div>` : '').join('')}
+    </div>`;
+
+  // ── PARTS REQUESTS STATUS ───────────────────────────────
+  const prHtml = preqs.length > 0 ? `
+    <div class="detail-section">
+      <h3>📦 Parts Requests</h3>
+      ${preqs.map(pr => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-size:13px;font-weight:600">${pr.Part_Name}</div>
+            <div style="font-size:11px;color:var(--text3)">${pr.Part_ID} · Qty: ${pr.Qty_Requested}</div>
+            <div style="font-size:11px;color:var(--text3)">${fmtDate(pr.Raised_At)}</div>
+          </div>
+          <div>
+            <span class="status-badge ${pr.Status==='Approved'?'s-rfd':pr.Status==='Rejected'?'s-closed':'s-open'}">${pr.Status}</span>
+            ${pr.Status==='Approved'?`<div style="font-size:10px;color:var(--success);margin-top:2px">${fmtDate(pr.Approved_At)}</div>`:''}
+            ${pr.Status==='Rejected'?`<div style="font-size:10px;color:var(--danger);margin-top:2px">${pr.Remarks||''}</div>`:''}
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  // ── TECH: RAISE PART REQUEST (only when Assigned / Parts Rejected) ──
+  const canRaiseRequest = isTech && ['Assigned','Parts Partially Approved'].includes(t.Status);
+  const raiseReqHtml = canRaiseRequest ? `
+    <div class="detail-section" style="border-color:var(--primary)">
+      <h3 style="color:var(--primary)">📦 Raise Parts Request</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Select parts needed. Inventory Manager will approve.</p>
+      <div class="parts-selector" id="repair-parts-selector"></div>
+      <div id="repair-selected-chips" class="selected-parts" style="margin-top:8px"></div>
+      <div class="field-group" style="margin-top:10px">
+        <label>Remarks (mention any part not in stock)</label>
+        <textarea id="pr-remarks" placeholder="e.g. ABS Handle Bar not in stock at hub..."></textarea>
+      </div>
+      <button class="btn btn-primary" id="raise-pr-btn" onclick="submitPartsRequest('${ticketId}','${t.Chassis_No}','${oem}')">
+        📤 Submit Parts Request
+      </button>
+    </div>` : '';
+
+  // ── TECH: START REPAIR (only when Parts Approved) ──────
+  const canStart = isTech && t.Status === 'Parts Approved';
+  const startHtml = canStart ? `
+    <div class="detail-section" style="border-color:var(--success)">
+      <h3 style="color:var(--success)">✅ Parts Approved — Ready to Repair</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">All parts approved. Click Start Repair to begin.</p>
+      <button class="btn btn-success" onclick="doStartRepair('${ticketId}','${t.Chassis_No}')">▶ Start Repair</button>
+    </div>` : '';
+
+  // ── TECH: COMPLETE REPAIR (only when In Repair) ────────
+  const canComplete = isTech && t.Status === 'In Repair';
+  const completeHtml = canComplete ? `
+    <div class="detail-section" style="border-color:var(--success)">
+      <h3>🔧 Work in Progress</h3>
+      <div class="field-group">
+        <label>Repair Remarks</label>
+        <textarea id="repair-remarks" placeholder="What was done, any observations..."></textarea>
+      </div>
+      <button class="btn btn-success" onclick="doCompleteRepair('${ticketId}','${t.Chassis_No}')">✅ Mark Complete → Send to QC</button>
+    </div>` : '';
+
+  // ── VIEWER: BOTTLENECK ALERT ───────────────────────────
+  const bottleneckHtml = isViewer ? (() => {
+    const pendingParts = preqs.filter(p => p.Status === 'Pending');
+    if (pendingParts.length > 0 && t.Status !== 'In Repair') {
+      return `<div style="background:rgba(245,158,11,.15);border:1px solid var(--warning);border-radius:var(--radius);padding:12px;margin-bottom:12px">
+        <div style="font-weight:700;color:var(--warning);margin-bottom:6px">⚠ Bottleneck: ${pendingParts.length} parts request(s) pending approval</div>
+        ${pendingParts.map(p=>`<div style="font-size:12px;color:var(--text2)">• ${p.Part_Name} ×${p.Qty_Requested} — waiting since ${fmtDate(p.Raised_At)}</div>`).join('')}
+      </div>`;
+    }
+    return '';
+  })() : '';
 
   document.getElementById('repair-work-content').innerHTML = `
     <div class="detail-section">
       <h3>Job Card — ${t.Ticket_ID}</h3>
       <div class="detail-row"><span>Chassis</span><span>${t.Chassis_No}</span></div>
       <div class="detail-row"><span>OEM</span><span>${t.OEM}</span></div>
-      <div class="detail-row"><span>Status</span><span>${t.Status}</span></div>
+      <div class="detail-row"><span>Hub</span><span>${t.Hub}</span></div>
+      <div class="detail-row"><span>Category</span><span style="color:var(--orange);font-weight:700">${t.Damage_Category||'—'}</span></div>
+      <div class="detail-row"><span>Status</span><span class="status-badge ${statusClass(t.Status)}">${t.Status}</span></div>
+      <div class="detail-row"><span>Assigned To</span><span>${t.Assigned_To||'—'}</span></div>
     </div>
+    ${timelineHtml}
+    ${bottleneckHtml}
     <div class="detail-section">
-      <h3>Assessed Damage Parts</h3>
-      ${parts.map(p => `<div class="detail-row"><span>${p.Part_Name}</span><span>×${p.Qty}</span></div>`).join('')}
+      <h3>Damaged Parts (${parts.length})</h3>
+      ${parts.map(p=>`<div class="detail-row"><span>${p.Part_Name}</span><span style="font-size:12px">${p.Category} ×${p.Qty}</span></div>`).join('')}
     </div>
-    <div class="section-hdr">Log Parts Used for Repair</div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Select parts you actually used. These will be deducted from inventory.</p>
-    <div class="parts-selector" id="repair-parts-selector"></div>
-    <div id="repair-selected-chips" class="selected-parts"></div>
-    <div class="field-group" style="margin-top:12px">
-      <label>Repair Remarks</label>
-      <textarea id="repair-remarks" placeholder="What was done..."></textarea>
-    </div>
-    <button class="btn btn-warning" onclick="logRepairParts('${ticketId}','${t.Chassis_No}','${oem}')" style="margin-bottom:8px">➕ Log Parts Used</button>
-    <button class="btn btn-success" onclick="completeRepair('${ticketId}','${t.Chassis_No}')">✅ Mark Repair Complete → QC</button>
-
-    <div class="divider"></div>
-    <div class="section-hdr">Start Repair Timer</div>
-    <button class="btn btn-primary btn-sm" onclick="startRepairTimer('${ticketId}','${t.Chassis_No}')">▶ Start Repair</button>
+    ${prHtml}
+    ${tsHtml}
+    ${raiseReqHtml}
+    ${startHtml}
+    ${completeHtml}
   `;
-  buildPartsSelector(normaliseOEM(oem), 'repair-parts-selector', 'repair');
-}
 
-async function startRepairTimer(ticketId, chassisNo) {
-  const res = await api('startRepair', { ticketId, chassisNo, hub: currentUser.hub, techMobile: currentUser.mobile, techName: currentUser.name });
-  if (res.success) toast('Repair started ⏱','success');
-}
-
-async function logRepairParts(ticketId, chassisNo, oem) {
-  if (daSelectedParts.length === 0) { toast('Select parts first','error'); return; }
-  for (const p of daSelectedParts) {
-    await api('addRepairPart', {
-      ticketId, chassisNo, hub: currentUser.hub,
-      techMobile: currentUser.mobile, techName: currentUser.name,
-      partId: p.partId, partCode: p.partCode, partName: p.partName,
-      category: p.category, qty: p.qty, unitPrice: p.unitPrice||0,
-      remarks: document.getElementById('repair-remarks')?.value || '',
-    });
+  // Build parts selector only if raising request
+  if (canRaiseRequest) {
+    buildPartsSelector(oem, 'repair-parts-selector', 'repair');
   }
-  toast(daSelectedParts.length + ' parts logged ✅','success');
-  daSelectedParts = [];
-  updateSelectedChips('repair');
 }
 
-async function completeRepair(ticketId, chassisNo) {
-  const remarks = document.getElementById('repair-remarks')?.value || '';
-  const res = await api('completeRepair', { ticketId, chassisNo, hub: currentUser.hub, techMobile: currentUser.mobile, techName: currentUser.name, remarks });
+// Submit Parts Request — called ONCE, prevents duplicate
+async function submitPartsRequest(ticketId, chassisNo, oem) {
+  if (daSelectedParts.length === 0) { toast('Select at least one part','error'); return; }
+  const btn = document.getElementById('raise-pr-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Submitting...'; }
+
+  const remarks = document.getElementById('pr-remarks')?.value || '';
+  const results = [];
+  for (const p of daSelectedParts) {
+    const r = await api('raisePartsRequest', {
+      ticketId, chassisNo,
+      hub: currentUser.hub,
+      techMobile: currentUser.mobile,
+      techName: currentUser.name,
+      partId: p.partId, partCode: p.partCode,
+      partName: p.partName, category: p.category,
+      qty: p.qty, remarks,
+    });
+    results.push(r);
+  }
+
+  // Update ticket status to Parts Requested
+  await api('updateTicketStatus', { ticketId, status: 'Parts Requested',
+    mobile: currentUser.mobile, name: currentUser.name,
+    remarks: daSelectedParts.length + ' parts requested' });
+
+  const failed = results.filter(r => r.error).length;
+  if (failed > 0) toast(failed + ' parts failed to submit','error');
+  else toast('✅ Parts request submitted! Waiting for approval.','success');
+
+  daSelectedParts = [];
+  openRepairWork(ticketId); // Reload the screen
+}
+
+async function doStartRepair(ticketId, chassisNo) {
+  const res = await api('startRepair', {
+    ticketId, chassisNo, hub: currentUser.hub,
+    techMobile: currentUser.mobile, techName: currentUser.name
+  });
   if (res.error) { toast(res.error,'error'); return; }
-  toast('Repair complete! Moved to QC ✅','success');
+  toast('▶ Repair started!','success');
+  openRepairWork(ticketId); // Reload
+}
+
+async function doCompleteRepair(ticketId, chassisNo) {
+  const remarks = document.getElementById('repair-remarks')?.value || '';
+  if (!remarks.trim()) { toast('Add repair remarks before completing','error'); return; }
+  const res = await api('completeRepair', {
+    ticketId, chassisNo, hub: currentUser.hub,
+    techMobile: currentUser.mobile, techName: currentUser.name, remarks
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('✅ Repair complete! Sent to QC.','success');
   showScreen('repair-queue'); loadRepairQueue();
 }
+
+// Legacy stubs — not used in new flow
+async function startRepairTimer(ticketId, chassisNo) { await doStartRepair(ticketId, chassisNo); }
+async function logRepairParts(ticketId, chassisNo, oem) { toast('Use Parts Request flow','error'); }
+async function completeRepair(ticketId, chassisNo) { await doCompleteRepair(ticketId, chassisNo); }
 
 // ═══════════════════════════════════════════════════════════
 // QC
@@ -1805,28 +1988,76 @@ async function approveInsurance(ticketId, chassisNo, riderId, caseType, hub) {
 // PARTS REQUESTS
 // ═══════════════════════════════════════════════════════════
 async function loadPartsRequests() {
-  const hub = currentUser.role === 'Inventory Manager' ? currentUser.hub : currentUser.hub;
-  const res = await api('getPartsRequests', { hub, status: 'Pending' });
-  const requests = res.requests || [];
-  document.getElementById('pr-content').innerHTML = requests.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No pending parts requests</p>'
-    : requests.map(r => `
-      <div class="ticket-card">
-        <div class="ticket-header"><span class="ticket-id">${r.Request_ID}</span><span class="status-badge s-open">Pending</span></div>
+  const hub = ['Super Admin','Admin','Service Head'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  // Load both Pending and recently decided
+  const [pendRes, allRes] = await Promise.all([
+    api('getPartsRequests', { hub, status: 'Pending' }),
+    api('getPartsRequests', { hub }),
+  ]);
+  const pending = pendRes.requests || [];
+  const all     = (allRes.requests || []).filter(r => r.Status !== 'Pending').slice(0,20);
+
+  const el = document.getElementById('pr-content');
+
+  const pendingHtml = pending.length === 0
+    ? '<p style="text-align:center;color:var(--text2);padding:20px 0">No pending requests ✅</p>'
+    : pending.map(r => `
+      <div class="ticket-card" style="border-color:var(--warning)">
+        <div class="ticket-header">
+          <span class="ticket-id">${r.Request_ID}</span>
+          <span class="status-badge s-open">Pending</span>
+        </div>
         <div class="ticket-title">${r.Part_Name}</div>
-        <div class="ticket-sub">Qty: ${r.Qty_Requested} · Tech: ${r.Tech_Name} · Ticket: ${r.Ticket_ID}</div>
+        <div class="ticket-meta"><span class="tag tag-blue">${r.Part_ID}</span><span class="tag tag-grey">${r.Category||''}</span></div>
+        <div class="ticket-sub">Qty: ${r.Qty_Requested} · Tech: ${r.Tech_Name} · Hub: ${r.Hub}</div>
+        <div class="ticket-sub">Job Card: ${r.Ticket_ID} · ${fmtDate(r.Raised_At)}</div>
+        ${r.Remarks ? `<div style="font-size:12px;color:var(--warning);margin-top:4px">📝 ${r.Remarks}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn btn-success btn-sm" onclick="decidePartsReq('${r.Request_ID}','Approved')" style="flex:1">✅ Approve</button>
-          <button class="btn btn-danger btn-sm" onclick="decidePartsReq('${r.Request_ID}','Rejected')" style="flex:1">❌ Reject</button>
+          <button class="btn btn-success btn-sm" onclick="decidePartsReq('${r.Request_ID}','Approved','${r.Ticket_ID}')" style="flex:1">✅ Approve & Issue</button>
+          <button class="btn btn-danger btn-sm" onclick="decidePartsReqWithReason('${r.Request_ID}','${r.Ticket_ID}')" style="flex:1">❌ Reject</button>
         </div>
       </div>`
     ).join('');
+
+  const historyHtml = all.length > 0 ? `
+    <div class="section-hdr" style="margin-top:16px">Recently Decided</div>
+    ${all.map(r => `
+      <div class="ticket-card" style="opacity:0.8">
+        <div class="ticket-header">
+          <span class="ticket-id" style="font-size:11px">${r.Request_ID}</span>
+          <span class="status-badge ${r.Status==='Approved'?'s-rfd':'s-closed'}">${r.Status}</span>
+        </div>
+        <div class="ticket-title" style="font-size:13px">${r.Part_Name} ×${r.Qty_Requested}</div>
+        <div class="ticket-sub">${r.Tech_Name} · ${r.Ticket_ID} · ${fmtDate(r.Approved_At)}</div>
+      </div>`).join('')}` : '';
+
+  el.innerHTML = `
+    <div class="section-hdr">Pending Approval (${pending.length})</div>
+    ${pendingHtml}
+    ${historyHtml}`;
 }
 
-async function decidePartsReq(reqId, decision) {
-  const res = await api('approvePartsRequest', { reqId, decision, managerMobile: currentUser.mobile, managerName: currentUser.name });
+async function decidePartsReq(reqId, decision, ticketId) {
+  const res = await api('approvePartsRequest', {
+    reqId, decision,
+    managerMobile: currentUser.mobile, managerName: currentUser.name,
+    ticketId,
+  });
   if (res.error) { toast(res.error,'error'); return; }
-  toast(decision + ' ✅','success');
+  toast(decision === 'Approved' ? '✅ Approved & issued from inventory' : '❌ Rejected','success');
+  loadPartsRequests();
+}
+
+async function decidePartsReqWithReason(reqId, ticketId) {
+  const reason = prompt('Reason for rejection (e.g. Out of stock):');
+  if (reason === null) return;
+  const res = await api('approvePartsRequest', {
+    reqId, decision: 'Rejected', remarks: reason,
+    managerMobile: currentUser.mobile, managerName: currentUser.name,
+    ticketId,
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('Rejected — technician notified','success');
   loadPartsRequests();
 }
 
