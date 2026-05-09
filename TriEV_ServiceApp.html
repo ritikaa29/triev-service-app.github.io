@@ -214,9 +214,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <!-- ═══════════════════════════════════════════ -->
 <div id="login" class="screen active">
   <div class="login-logo">
-    <div class="icon">⚡</div>
-    <h1>TriEV Service</h1>
-    <p>Fleet Service Management</p>
+    <svg viewBox="0 0 300 100" xmlns="http://www.w3.org/2000/svg" style="width:240px;height:80px;margin-bottom:4px;display:block;margin-left:auto;margin-right:auto">
+      <defs>
+        <linearGradient id="boltGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#FFE033"/>
+          <stop offset="100%" stop-color="#FF9900"/>
+        </linearGradient>
+      </defs>
+      <text x="8" y="76" font-family="Arial Black,Impact,sans-serif" font-weight="900" font-size="82" fill="#FF6B00" letter-spacing="-3">triev</text>
+      <polygon points="218,5 203,48 215,48 197,90 238,40 224,40" fill="url(#boltGrad)"/>
+      <text x="52" y="96" font-family="Arial,sans-serif" font-weight="700" font-size="12" fill="#3355FF" letter-spacing="0.8">#JoinTheEVTribe</text>
+    </svg>
+    <p style="color:var(--text2);font-size:12px;margin-top:6px;letter-spacing:1px;text-transform:uppercase">Fleet Service Management</p>
   </div>
   <div class="login-card">
     <div id="login-err" class="err-msg" style="display:none"></div>
@@ -253,8 +262,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 <!-- ═══════════════════════════════════════════ -->
 <div id="home" class="screen">
   <div class="topbar">
-    <span style="font-size:22px">⚡</span>
-    <h1>TriEV Service</h1>
+    <svg viewBox="0 0 110 38" xmlns="http://www.w3.org/2000/svg" style="height:32px;width:auto;flex-shrink:0">
+      <text x="2" y="30" font-family="Arial Black,Impact,sans-serif" font-weight="900" font-size="32" fill="#FF6B00" letter-spacing="-1">triev</text>
+      <polygon points="86,2 80,18 85,18 77,35 95,15 89,15" fill="url(#tb)"/>
+      <defs><linearGradient id="tb" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#FFE033"/><stop offset="100%" stop-color="#FF9900"/></linearGradient></defs>
+    </svg>
+    <h1 style="font-size:14px">Service App</h1>
     <span id="home-hub-badge" class="badge"></span>
     <span onclick="doLogout()" style="cursor:pointer;font-size:18px;color:var(--text3)">🚪</span>
   </div>
@@ -671,15 +684,22 @@ document.addEventListener('DOMContentLoaded', () => {
 // ═══════════════════════════════════════════════════════════
 async function api(action, params={}) {
   try {
-    const body = JSON.stringify({ action, ...params });
-    const res = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
+    // Use GET with query params (Apps Script compatible)
+    const allParams = { action, ...params };
+    // Convert any object/array values to JSON strings for URL encoding
+    const flat = {};
+    Object.entries(allParams).forEach(([k,v]) => {
+      flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : v;
     });
-    return await res.json();
+    const qs = new URLSearchParams(flat).toString();
+    const url = API_URL + '?' + qs;
+    const res = await fetch(url, { method: 'GET', redirect: 'follow' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const text = await res.text();
+    try { return JSON.parse(text); }
+    catch(e) { return { error: 'Bad server response. Check Apps Script deployment.' }; }
   } catch(e) {
-    return { error: 'Network error: ' + e.message };
+    return { error: 'Server error: ' + e.message };
   }
 }
 
