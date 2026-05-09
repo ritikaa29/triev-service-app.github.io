@@ -632,7 +632,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbxN6Ycmo-VeKwpIzBWJH1Vxr5YAgI70J7NSZHKncZG6KlIvQgP63SAZQSQGF1YPacuauA/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbxJwtzyKBdtTtkYZsFGKsg92HRDWi1ZUwWQ1OGppDinkEDz79_ZDcoj1QGOfPzZiUaiLg/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -804,30 +804,41 @@ function showHome() {
 
 function buildHomeCards() {
   const r = currentUser.role;
+  // Normalise plain "Technician" to "Core Technician" for card matching
+  const effectiveRole = (currentUser.role === 'Technician') ? 'Core Technician' : currentUser.role;
+
   const allCards = {
-    'damage-form':        { icon:'📋', title:'New Assessment', sub:'Submit vehicle damage', color:'orange', roles:['Advisor'] },
-    'damage-list':        { icon:'📄', title:'DA Tickets', sub:'View all tickets', color:'blue', roles:['Advisor','Hub Manager','Lead Technician','Service Head','Admin','Super Admin','General Manager','City Ops','Cluster Manager','Team Lead'] },
-    'repair-queue':       { icon:'🔧', title:'Repair Queue', sub:'Assign & work repairs', color:'green', roles:['Lead Technician','Core Technician','Technician'] },
-    'running-queue':      { icon:'⚡', title:'Running Repairs', sub:'Quick fixes queue', color:'yellow', roles:['Running Repair Technician'] },
-    'qc-screen':          { icon:'🔍', title:'QC Inspection', sub:'Quality check queue', color:'purple', roles:['QC Technician'] },
-    'iot-screen':         { icon:'📡', title:'IOT Check', sub:'IOT & RFD marking', color:'teal', roles:['IOT Manager'] },
-    'raise-recovery':     { icon:'🚨', title:'Raise Ticket', sub:'Recovery/Impound/FIR', color:'red', roles:['Team Lead','Cluster Manager'] },
-    'recovery-screen':    { icon:'🗂', title:'Recovery Cases', sub:'Manage cases', color:'red', roles:['Recovery Manager','Recovery Associate','Team Lead','Cluster Manager','City Ops','Service Head'] },
-    'insurance-screen':   { icon:'🛡', title:'Insurance', sub:'Claims & approvals', color:'teal', roles:['Insurance Manager','Service Head'] },
-    'inventory-screen':   { icon:'📦', title:'Inventory', sub:'Stock levels & logs', color:'green', roles:['Inventory Manager','Lead Technician','Service Head','Admin','Super Admin'] },
-    'parts-req-screen':   { icon:'🔩', title:'Parts Requests', sub:'Approve/reject requests', color:'orange', roles:['Inventory Manager','Lead Technician'] },
-    'dashboard-screen':   { icon:'📊', title:'Dashboard', sub:'Analytics & reports', color:'blue', roles:['Service Head','City Ops','Cluster Manager','General Manager','Data Analyst','Admin','Super Admin','Hub Manager'] },
+    'damage-form':        { icon:'📋', title:'New Assessment', sub:'Submit vehicle damage', color:'orange',
+                            roles:['Advisor'] },
+    'damage-list':        { icon:'📄', title:'DA Tickets', sub:'View all tickets', color:'blue',
+                            roles:['Advisor','Hub Manager','Lead Technician','Service Head','Admin','Super Admin','General Manager','City Ops','Cluster Manager','Team Lead'] },
+    'repair-queue':       { icon:'🔧', title:'My Repair Jobs', sub:'My assigned tickets', color:'green',
+                            roles:['Lead Technician','Core Technician'] },
+    'repair-monitor':     { icon:'📊', title:'Repair Monitor', sub:'All active repairs & status', color:'orange',
+                            roles:['Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'] },
+    'running-queue':      { icon:'⚡', title:'Running Repairs', sub:'Quick fixes queue', color:'yellow',
+                            roles:['Running Repair Technician'] },
+    'qc-screen':          { icon:'🔍', title:'QC Inspection', sub:'Quality check queue', color:'purple',
+                            roles:['QC Technician'] },
+    'iot-screen':         { icon:'📡', title:'IOT Check', sub:'IOT & RFD marking', color:'teal',
+                            roles:['IOT Manager'] },
+    'raise-recovery':     { icon:'🚨', title:'Raise Recovery', sub:'Recovery/Impound/FIR', color:'red',
+                            roles:['Team Lead','Cluster Manager'] },
+    'recovery-screen':    { icon:'🗂', title:'Recovery Cases', sub:'Manage cases', color:'red',
+                            roles:['Recovery Manager','Recovery Associate','Team Lead','Cluster Manager','City Ops','Service Head'] },
+    'insurance-screen':   { icon:'🛡', title:'Insurance', sub:'Claims & approvals', color:'teal',
+                            roles:['Insurance Manager','Service Head'] },
+    'inventory-screen':   { icon:'📦', title:'Inventory', sub:'Stock levels & logs', color:'green',
+                            roles:['Inventory Manager','Lead Technician','Service Head','Admin','Super Admin'] },
+    'parts-req-screen':   { icon:'🔩', title:'Parts Requests', sub:'Approve/reject requests', color:'orange',
+                            roles:['Inventory Manager'] },
+    'dashboard-screen':   { icon:'📊', title:'Dashboard', sub:'Analytics & reports', color:'blue',
+                            roles:['Service Head','City Ops','Cluster Manager','General Manager','Data Analyst','Admin','Super Admin','Hub Manager'] },
   };
 
   const cards = Object.entries(allCards).filter(([, c]) => {
-    // Match if user role exactly equals a listed role,
-    // OR if user role is a substring of a listed role (e.g. "Technician" matches "Core Technician")
-    // OR if a listed role is a substring of user role
-    return c.roles.some(cr =>
-      cr === r ||
-      cr.includes(r) ||
-      r.includes(cr)
-    ) || r === 'Super Admin' || r === 'Admin';
+    // EXACT match only — use effectiveRole (Technician → Core Technician)
+    return c.roles.includes(effectiveRole) || effectiveRole === 'Super Admin' || effectiveRole === 'Admin';
   });
 
   document.getElementById('home-cards').innerHTML = cards.map(([screen, c]) =>
@@ -865,6 +876,7 @@ function navTo(screen) {
     case 'damage-form':    showScreen('damage-form'); break;
     case 'damage-list':    showScreen('damage-list'); loadDAList(); break;
     case 'repair-queue':   showScreen('repair-queue'); loadRepairQueue(); break;
+    case 'repair-monitor': showScreen('repair-queue'); loadRepairMonitor(); break;
     case 'running-queue':  showScreen('running-queue'); loadRunningQueue(); break;
     case 'qc-screen':      showScreen('qc-screen'); loadQCQueue(); break;
     case 'iot-screen':     showScreen('iot-screen'); loadIOTQueue(); break;
@@ -1139,7 +1151,7 @@ function renderDAList() {
     ? '<p style="text-align:center;color:var(--text2);padding:40px">No tickets found</p>'
     : tickets.map(t => {
       const assignRoleMatch = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops']
-        .some(ar => currentUser.role === ar || currentUser.role.includes(ar) || ar.includes(currentUser.role));
+        .includes(currentUser.role); // EXACT match only — technicians cannot reassign
       const showAssign   = assignRoleMatch && t.Status === 'Open';
       const showReassign = assignRoleMatch && ['Assigned','In Repair'].includes(t.Status);
       return `
@@ -1246,7 +1258,7 @@ async function viewDATicket(ticketId) {
 
   const r = currentUser.role;
   const CAN_ASSIGN_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
-  const roleCanAssign = CAN_ASSIGN_ROLES.some(ar => r === ar || r.includes(ar) || ar.includes(r));
+  const roleCanAssign = CAN_ASSIGN_ROLES.includes(r); // EXACT — technicians cannot assign/reassign
 
   // ASSIGN — ticket is Open or Insurance Approved
   const canAssign = roleCanAssign && ['Open','Insurance Approved'].includes(t.Status);
@@ -1363,22 +1375,71 @@ async function assignTicket(ticketId, chassisNo) {
 // ═══════════════════════════════════════════════════════════
 // REPAIR QUEUE & WORK
 // ═══════════════════════════════════════════════════════════
+async function loadRepairMonitor() {
+  // Managers see ALL active repairs across hub with full status
+  showScreen('repair-queue');
+  document.getElementById('repair-queue-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div><span>Loading all repairs...</span></div>';
+  const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role)
+    ? 'ALL' : currentUser.hub;
+  const res = await api('getDamageTickets', { hub });
+  const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
+  const tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
+
+  const statusColor = {
+    'Assigned':        { bg:'rgba(79,142,247,.15)', border:'var(--primary)',  label:'🔵 Assigned' },
+    'Parts Requested': { bg:'rgba(245,158,11,.15)', border:'var(--warning)',  label:'🟡 Parts Requested' },
+    'Parts Approved':  { bg:'rgba(34,197,94,.15)',  border:'var(--success)',  label:'🟢 Parts Approved' },
+    'In Repair':       { bg:'rgba(249,115,22,.15)', border:'var(--orange)',   label:'🔧 In Repair' },
+  };
+
+  document.getElementById('repair-queue-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:13px;color:var(--text2)">${tickets.length} active repair tickets · ${hub === 'ALL' ? 'All Hubs' : hub}</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadRepairMonitor()">🔄 Refresh</button>
+    </div>
+    ${Object.entries(statusColor).map(([status, style]) => {
+      const group = tickets.filter(t => t.Status === status);
+      if (group.length === 0) return '';
+      return `
+        <div style="margin-bottom:16px">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">
+            ${style.label} (${group.length})
+          </div>
+          ${group.map(t => `
+            <div class="ticket-card" style="border-color:${style.border};background:${style.bg};margin-bottom:8px" onclick="openRepairWork('${t.Ticket_ID}')">
+              <div class="ticket-header">
+                <span class="ticket-id">${t.Ticket_ID}</span>
+                <span style="font-size:11px;color:var(--text2)">${t.Hub}</span>
+              </div>
+              <div class="ticket-title">${t.Chassis_No} · ${t.OEM}</div>
+              <div class="ticket-sub">Tech: ${t.Assigned_To||'—'} · Rider: ${t.Rider_ID}</div>
+              <div class="ticket-sub" style="margin-top:3px;color:var(--text3)">Assigned: ${fmtDate(t.Assigned_At)}</div>
+            </div>`).join('')}
+        </div>`;
+    }).join('')}
+    ${tickets.length === 0 ? '<p style="text-align:center;color:var(--text2);padding:40px">No active repairs right now ✅</p>' : ''}
+  `;
+}
+
 async function loadRepairQueue() {
-  const isTech = currentUser.role.toLowerCase().includes('technician') || currentUser.role === 'Technician';
-  const MANAGER_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
-  const isManager = MANAGER_ROLES.some(r => currentUser.role === r || currentUser.role.includes(r));
+  const TECH_ONLY_ROLES = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
+  const LEAD_MANAGER_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
+  const isTechOnly = TECH_ONLY_ROLES.includes(currentUser.role);
+  const isLeadManager = LEAD_MANAGER_ROLES.some(r => currentUser.role === r);
 
   let res;
-  if (isTech && !isManager) {
-    // Technician sees only their assigned tickets
+  if (isTechOnly) {
+    // Plain technician — ONLY their own assigned tickets, nothing else
     res = await api('getMyRepairs', { mobile: currentUser.mobile });
-  } else {
-    // Managers/leads see all active repair tickets for their hub
+  } else if (isLeadManager) {
+    // Lead/managers see all active repairs across their hub
     const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
     res = await api('getDamageTickets', { hub });
-    // Filter to active repair statuses only
     const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
     res.tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
+  } else {
+    res = await api('getMyRepairs', { mobile: currentUser.mobile });
   }
 
   const tickets = res.tickets || [];
@@ -1439,7 +1500,8 @@ async function openRepairWork(ticketId) {
   const preqs  = (prRes.requests || []);
   const events = (evRes.events || []);
   const oem    = normaliseOEM(t.OEM || 'Ampere');
-  const isTech = currentUser.role.toLowerCase().includes('technician') || currentUser.role === 'Technician';
+  const TECH_ONLY = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
+  const isTech = TECH_ONLY.includes(currentUser.role);
   const isViewer = !isTech; // admin/lead/service head viewing
 
   // ── STATUS TIMELINE ─────────────────────────────────────
