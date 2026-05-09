@@ -229,6 +229,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
   <div class="login-card">
     <div id="login-err" class="err-msg" style="display:none"></div>
+    <div id="api-status" style="font-size:11px;text-align:center;color:var(--text3);margin-bottom:12px">
+      <span id="api-ping-text">⏳ Checking server...</span>
+    </div>
     <div class="field-group">
       <label>Mobile Number</label>
       <input type="tel" id="inp-mobile" placeholder="Enter mobile number" maxlength="10">
@@ -632,7 +635,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbzqkdJ3ihd81aEFk5pK3xLJkB-OWzr1F6jEwGq628sQZVaP_nKP7wdtQNShYGqLEayzoQ/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbwbdduEoQc-E3w-RWD0CqlWL1hInqZ-KpLXaiM6OUM4bqUmuGkmsyoO8saMwGW4EANbRA/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -677,11 +680,8 @@ let techniciansByHub = {};   // cache: hub → [{mobile, name, role}]
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   const saved = sessionStorage.getItem('triev_user');
-  if (saved) {
-    currentUser = JSON.parse(saved);
-    showHome();
-  }
-  // Check if this is public QR form
+
+  // Check if this is public QR form first
   const urlParams = new URLSearchParams(window.location.search);
   const hub = urlParams.get('hub');
   if (hub) {
@@ -690,8 +690,31 @@ document.addEventListener('DOMContentLoaded', () => {
     showScreen('running-public');
     return;
   }
-  if (!saved) showScreen('login');
+
+  if (saved) {
+    currentUser = JSON.parse(saved);
+    showHome();
+  } else {
+    showScreen('login');
+    // Ping server to check it's alive
+    pingServer();
+  }
 });
+
+async function pingServer() {
+  const el = document.getElementById('api-ping-text');
+  if (!el) return;
+  const start = Date.now();
+  const res = await api('ping', {});
+  const ms = Date.now() - start;
+  if (res.success) {
+    el.textContent = '✅ Server online (' + ms + 'ms)';
+    el.style.color = 'var(--success)';
+  } else {
+    el.textContent = '❌ Server error: ' + (res.error || 'unknown');
+    el.style.color = 'var(--danger)';
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 // API CALL
@@ -1542,20 +1565,27 @@ async function loadRepairQueue() {
 // ═══════════════════════════════════════════════════════════
 
 async function openRepairWork(ticketId) {
-  document.getElementById('repair-work-content').innerHTML =
-    '<div class="loading"><div class="spinner"></div><span>Loading job card...</span></div>';
   showScreen('repair-work');
+  const el = document.getElementById('repair-work-content');
+  let secs = 0;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><span id="rw-load-txt">Loading... 0s</span></div>';
+  const loadTimer = setInterval(() => { secs++; const t=document.getElementById('rw-load-txt'); if(t) t.textContent='Loading... '+secs+'s'; }, 1000);
 
-  // Fetch sequentially — avoids one failure killing the whole screen
+  const showErr = (msg) => {
+    clearInterval(loadTimer);
+    el.innerHTML = `<div style="padding:24px;text-align:center">
+      <div style="font-size:32px;margin-bottom:12px">⚠️</div>
+      <div style="color:var(--danger);font-size:13px;margin-bottom:16px;word-break:break-all">${msg}</div>
+      <button class="btn btn-primary btn-sm" onclick="openRepairWork('${ticketId}')">🔄 Retry</button>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px;display:block;width:100%" onclick="showScreen('repair-queue');loadRepairQueue()">← Back</button>
+    </div>`;
+  };
+
   const detailRes = await api('getDamageDetail', { ticketId });
-  if (detailRes.error) {
-    document.getElementById('repair-work-content').innerHTML =
-      `<div style="padding:20px;color:var(--danger)">❌ Error loading ticket: ${detailRes.error}</div>
-       <button class="btn btn-ghost btn-sm" onclick="showScreen('repair-queue');loadRepairQueue()" style="margin:16px">← Back</button>`;
-    return;
-  }
-  const prRes  = await api('getPartsRequests', { ticketId });
-  const evRes  = await api('getRepairEvents',  { ticketId });
+  if (!detailRes || detailRes.error) { showErr('Ticket load failed: ' + (detailRes?.error||'No response')); return; }
+  const prRes = await api('getPartsRequests', { ticketId });
+  const evRes = await api('getRepairEvents',  { ticketId });
+  clearInterval(loadTimer);
   // Safety: if events sheet doesn't exist yet, treat as empty
   currentRepairTicket = detailRes;
   daSelectedParts = [];
