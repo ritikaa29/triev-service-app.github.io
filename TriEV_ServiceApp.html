@@ -231,6 +231,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
     <div id="login-err" class="err-msg" style="display:none"></div>
     <div id="api-status" style="font-size:11px;text-align:center;color:var(--text3);margin-bottom:12px">
       <span id="api-ping-text">⏳ Checking server...</span>
+      <div style="font-size:9px;color:var(--text3);margin-top:2px;word-break:break-all" id="api-url-display"></div>
     </div>
     <div class="field-group">
       <label>Mobile Number</label>
@@ -704,15 +705,25 @@ document.addEventListener('DOMContentLoaded', () => {
 async function pingServer() {
   const el = document.getElementById('api-ping-text');
   if (!el) return;
+  // Non-blocking — user can login while ping runs
+  el.textContent = '⏳ Checking server...';
+  el.style.color = 'var(--text3)';
+  const urlEl = document.getElementById('api-url-display');
+  if (urlEl) urlEl.textContent = API_URL.slice(0,60) + '...';
   const start = Date.now();
-  const res = await api('ping', {});
-  const ms = Date.now() - start;
-  if (res.success) {
-    el.textContent = '✅ Server online (' + ms + 'ms)';
-    el.style.color = 'var(--success)';
-  } else {
-    el.textContent = '❌ Server error: ' + (res.error || 'unknown');
-    el.style.color = 'var(--danger)';
+  try {
+    const res = await apiXHR('ping', {}, 10000);
+    const ms = Date.now() - start;
+    if (!el) return;
+    if (res && res.success) {
+      el.textContent = '✅ Server online (' + ms + 'ms)';
+      el.style.color = 'var(--success)';
+    } else {
+      el.textContent = '⚠️ ' + (res?.error || 'Server not responding — try logging in anyway');
+      el.style.color = 'var(--warning)';
+    }
+  } catch(e) {
+    if (el) { el.textContent = '⚠️ Cannot reach server'; el.style.color = 'var(--warning)'; }
   }
 }
 
@@ -720,54 +731,45 @@ async function pingServer() {
 // API CALL
 // ═══════════════════════════════════════════════════════════
 // ── API call — POST to Apps Script, 25s timeout, 1 auto-retry ──
-// ── API — uses XMLHttpRequest to avoid fetch+redirect+AbortController bug
-function apiXHR(action, params, timeoutMs) {
-  return new Promise((resolve) => {
+// ── API — handles Apps Script redirect correctly
+async function api(action, params={}, attempt=1) {
+  try {
     const flat = { action };
     Object.entries(params||{}).forEach(([k,v]) => {
       flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
     });
-    const qs  = new URLSearchParams(flat).toString();
+    const qs = new URLSearchParams(flat).toString();
     const url = API_URL + '?' + qs;
 
-    const xhr = new XMLHttpRequest();
-    let done = false;
+    // Use fetch — Apps Script redirect works fine with fetch
+    // The key is NOT using AbortController (causes silent hang on redirect)
+    const timeoutPromise = new Promise(resolve =>
+      setTimeout(() => resolve({ error: 'Timeout — server slow, retry' }), 15000)
+    );
+    const fetchPromise = fetch(url, { method:'GET', redirect:'follow' })
+      .then(r => r.text())
+      .then(text => {
+        if (!text) return { error:'Empty response' };
+        if (text.trim().startsWith('<')) return { error:'Server HTML error — check deployment' };
+        try { return JSON.parse(text); }
+        catch(e) { return { error:'Parse error: '+text.slice(0,100) }; }
+      })
+      .catch(e => ({ error:'Fetch error: '+e.message }));
 
-    const finish = (result) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(result);
-    };
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
 
-    const timer = setTimeout(() => {
-      xhr.abort();
-      finish({ error: 'Timeout after ' + (timeoutMs/1000) + 's — server too slow' });
-    }, timeoutMs || 15000);
-
-    xhr.open('GET', url, true);
-    xhr.onload = () => {
-      const text = xhr.responseText || '';
-      if (!text) { finish({ error: 'Empty response' }); return; }
-      if (text.trim().startsWith('<')) { finish({ error: 'Server error — redeploy Apps Script' }); return; }
-      try { finish(JSON.parse(text)); }
-      catch(e) { finish({ error: 'Parse error: ' + text.slice(0,80) }); }
-    };
-    xhr.onerror   = () => finish({ error: 'Network error' });
-    xhr.onabort   = () => {};  // handled by timer
-    xhr.send();
-  });
-}
-
-async function api(action, params={}, attempt=1) {
-  const result = await apiXHR(action, params, 15000);
-  // Auto-retry once on timeout
-  if (result.error && result.error.includes('Timeout') && attempt < 2) {
-    await new Promise(r => setTimeout(r, 1000));
-    return api(action, params, 2);
+    if (result.error && result.error.includes('Timeout') && attempt < 2) {
+      await new Promise(r => setTimeout(r, 1500));
+      return api(action, params, 2);
+    }
+    return result;
+  } catch(e) {
+    return { error: 'API error: ' + e.message };
   }
-  return result;
 }
+
+// Keep apiXHR as alias for pingServer
+function apiXHR(action, params, timeoutMs) { return api(action, params); }
 
 // ═══════════════════════════════════════════════════════════
 // SCREEN NAV
