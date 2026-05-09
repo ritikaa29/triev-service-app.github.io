@@ -708,44 +708,34 @@ document.addEventListener('DOMContentLoaded', () => {
 // API CALL
 // ═══════════════════════════════════════════════════════════
 // ── API call — POST to Apps Script, 25s timeout, 1 auto-retry ──
-// ── API — handles Apps Script redirect correctly
-async function api(action, params={}, attempt=1) {
+// ── API function ─────────────────────────────────────────────
+async function api(action, params, attempt) {
+  attempt = attempt || 1;
+  params = params || {};
   try {
-    const flat = { action };
-    Object.entries(params||{}).forEach(([k,v]) => {
-      flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
+    const flat = { action: action };
+    Object.keys(params).forEach(function(k) {
+      const v = params[k];
+      flat[k] = (v !== null && typeof v === 'object') ? JSON.stringify(v) : String(v === undefined ? '' : v);
     });
     const qs = new URLSearchParams(flat).toString();
     const url = API_URL + '?' + qs;
-
-    // Use fetch — Apps Script redirect works fine with fetch
-    // The key is NOT using AbortController (causes silent hang on redirect)
-    const timeoutPromise = new Promise(resolve =>
-      setTimeout(() => resolve({ error: 'Timeout — server slow, retry' }), 15000)
-    );
-    const fetchPromise = fetch(url, { method:'GET', redirect:'follow' })
-      .then(r => r.text())
-      .then(text => {
-        if (!text) return { error:'Empty response' };
-        if (text.trim().startsWith('<')) return { error:'Server HTML error — check deployment' };
-        try { return JSON.parse(text); }
-        catch(e) { return { error:'Parse error: '+text.slice(0,100) }; }
-      })
-      .catch(e => ({ error:'Fetch error: '+e.message }));
-
-    const result = await Promise.race([fetchPromise, timeoutPromise]);
-
-    if (result.error && result.error.includes('Timeout') && attempt < 2) {
-      await new Promise(r => setTimeout(r, 1500));
+    const to  = new Promise(function(res){ setTimeout(function(){ res({error:'Timeout (15s)'}); }, 15000); });
+    const req = fetch(url, { method:'GET', redirect:'follow' })
+      .then(function(r){ return r.text(); })
+      .then(function(txt){
+        if (!txt) return {error:'Empty response'};
+        if (txt.trim()[0]==='<') return {error:'Server HTML error'};
+        try { return JSON.parse(txt); } catch(e){ return {error:'Parse: '+txt.slice(0,80)}; }
+      }).catch(function(e){ return {error:'Network: '+e.message}; });
+    const result = await Promise.race([req, to]);
+    if (result.error && result.error.indexOf('Timeout')>=0 && attempt<2) {
+      await new Promise(function(r){ setTimeout(r,2000); });
       return api(action, params, 2);
     }
     return result;
-  } catch(e) {
-    return { error: 'API error: ' + e.message };
-  }
+  } catch(e) { return {error:'Exception: '+e.message}; }
 }
-
-
 
 // ═══════════════════════════════════════════════════════════
 // SCREEN NAV
@@ -776,11 +766,35 @@ async function doLogin() {
   const pass   = document.getElementById('inp-pass').value.trim();
   if (!mobile || !pass) { showErr('login-err','Enter mobile and password'); return; }
 
-  document.querySelector('#login .btn').textContent = '⏳ Logging in...';
-  const res = await api('login', { mobile, password: pass });
-  document.querySelector('#login .btn').textContent = '🔐 Login';
+  const btn = document.querySelector('#login .btn');
+  btn.textContent = '⏳ Logging in...';
+  btn.disabled = true;
 
-  if (res.error) { showErr('login-err', res.error); return; }
+  // Show progress so user knows it's working
+  showErr('login-err', '⏳ Connecting to server...');
+  document.getElementById('login-err').style.background = 'rgba(79,142,247,.15)';
+  document.getElementById('login-err').style.borderColor = 'var(--primary)';
+  document.getElementById('login-err').style.color = '#93c5fd';
+  document.getElementById('login-err').style.display = 'block';
+
+  let res;
+  try {
+    res = await api('login', { mobile, password: pass });
+  } catch(e) {
+    res = { error: 'Exception: ' + e.message };
+  }
+
+  btn.textContent = '🔐 Login';
+  btn.disabled = false;
+
+  // Reset error style
+  document.getElementById('login-err').style.background = '';
+  document.getElementById('login-err').style.borderColor = '';
+  document.getElementById('login-err').style.color = '';
+
+  if (!res) { showErr('login-err', 'No response from server'); return; }
+  if (res.error) { showErr('login-err', '❌ ' + res.error); return; }
+  if (!res.success) { showErr('login-err', 'Unexpected response: ' + JSON.stringify(res).slice(0,100)); return; }
 
   currentUser = res.user;
   sessionStorage.setItem('triev_user', JSON.stringify(currentUser));
