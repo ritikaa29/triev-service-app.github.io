@@ -632,7 +632,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbyAhlKz7Xyq6VhyIYgATaQMcGbNoevk5MkMcARNcFk15cE1AX-GxhQosMAgVEIrUGcF8w/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzqe33qB41LsIaME9nNbYH00ZUN8nzO1NIoiJJIkjDT1yJZNCESRG1dmlp1dSOQ98iOZA/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -795,8 +795,7 @@ function showHome() {
   document.getElementById('home-hub-badge').textContent = u.hub;
 
   // Show daily role selector for technicians
-  const techRoles = ['Core Technician','Running Repair Technician','QC Technician'];
-  const isTech = techRoles.some(r => u.role.includes('Technician')) || u.role.includes('Technician');
+  const isTech = u.role.toLowerCase().includes('technician');
   document.getElementById('daily-role-selector').style.display = isTech ? 'block' : 'none';
 
   buildHomeCards();
@@ -808,7 +807,7 @@ function buildHomeCards() {
   const allCards = {
     'damage-form':        { icon:'📋', title:'New Assessment', sub:'Submit vehicle damage', color:'orange', roles:['Advisor'] },
     'damage-list':        { icon:'📄', title:'DA Tickets', sub:'View all tickets', color:'blue', roles:['Advisor','Hub Manager','Lead Technician','Service Head','Admin','Super Admin','General Manager','City Ops','Cluster Manager','Team Lead'] },
-    'repair-queue':       { icon:'🔧', title:'Repair Queue', sub:'Assign & work repairs', color:'green', roles:['Lead Technician','Core Technician'] },
+    'repair-queue':       { icon:'🔧', title:'Repair Queue', sub:'Assign & work repairs', color:'green', roles:['Lead Technician','Core Technician','Technician'] },
     'running-queue':      { icon:'⚡', title:'Running Repairs', sub:'Quick fixes queue', color:'yellow', roles:['Running Repair Technician'] },
     'qc-screen':          { icon:'🔍', title:'QC Inspection', sub:'Quality check queue', color:'purple', roles:['QC Technician'] },
     'iot-screen':         { icon:'📡', title:'IOT Check', sub:'IOT & RFD marking', color:'teal', roles:['IOT Manager'] },
@@ -821,7 +820,14 @@ function buildHomeCards() {
   };
 
   const cards = Object.entries(allCards).filter(([, c]) => {
-    return c.roles.some(cr => r.includes(cr)) || r === 'Super Admin' || r === 'Admin';
+    // Match if user role exactly equals a listed role,
+    // OR if user role is a substring of a listed role (e.g. "Technician" matches "Core Technician")
+    // OR if a listed role is a substring of user role
+    return c.roles.some(cr =>
+      cr === r ||
+      cr.includes(r) ||
+      r.includes(cr)
+    ) || r === 'Super Admin' || r === 'Admin';
   });
 
   document.getElementById('home-cards').innerHTML = cards.map(([screen, c]) =>
@@ -1132,8 +1138,10 @@ function renderDAList() {
   document.getElementById('da-list-content').innerHTML = tickets.length === 0
     ? '<p style="text-align:center;color:var(--text2);padding:40px">No tickets found</p>'
     : tickets.map(t => {
-      const CAN_ASSIGN = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
-      const showAssign = CAN_ASSIGN.includes(currentUser.role) && t.Status === 'Open';
+      const assignRoleMatch = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops']
+        .some(ar => currentUser.role === ar || currentUser.role.includes(ar) || ar.includes(currentUser.role));
+      const showAssign   = assignRoleMatch && t.Status === 'Open';
+      const showReassign = assignRoleMatch && ['Assigned','In Repair'].includes(t.Status);
       return `
       <div class="ticket-card">
         <div class="ticket-header" onclick="viewDATicket('${t.Ticket_ID}')">
@@ -1149,16 +1157,19 @@ function renderDAList() {
         <div class="ticket-title" onclick="viewDATicket('${t.Ticket_ID}')">${t.Chassis_No}</div>
         <div class="ticket-sub" onclick="viewDATicket('${t.Ticket_ID}')">Rider: ${t.Rider_ID} · Hub: ${t.Hub} · ₹${Number(t.Damage_Amount||0).toLocaleString('en-IN')}</div>
         <div class="ticket-sub" style="margin-top:4px" onclick="viewDATicket('${t.Ticket_ID}')">${fmtDate(t.Submitted_At)}</div>
-        ${showAssign ? `
+        ${(showAssign || showReassign) ? `
         <div style="margin-top:10px">
+          ${showReassign && t.Assigned_To ? `<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ Currently: ${t.Assigned_To}</div>` : ''}
           <div style="display:flex;gap:8px;align-items:center">
             <select id="tech-sel-${t.Ticket_ID}"
-              style="flex:1;background:var(--surface3);border:1.5px solid var(--border);border-radius:8px;padding:9px 10px;color:var(--text);font-size:12px;outline:none"
+              style="flex:1;background:var(--surface3);border:1.5px solid ${showReassign ? 'var(--warning)' : 'var(--border)'};border-radius:8px;padding:9px 10px;color:var(--text);font-size:12px;outline:none"
               onfocus="buildTechDropdown('${t.Ticket_ID}','${t.Hub}')">
-              <option value="">👆 Tap to load technicians</option>
+              <option value="">👆 ${showReassign ? 'Tap to reassign' : 'Tap to load technicians'}</option>
             </select>
-            <button id="assign-btn-${t.Ticket_ID}" class="btn btn-primary btn-sm"
-              onclick="quickAssign('${t.Ticket_ID}','${t.Chassis_No}','${t.Hub}')">Assign</button>
+            <button id="assign-btn-${t.Ticket_ID}" class="btn ${showReassign ? 'btn-warning' : 'btn-primary'} btn-sm"
+              onclick="quickAssign('${t.Ticket_ID}','${t.Chassis_No}','${t.Hub}',${showReassign})">
+              ${showReassign ? '🔄' : 'Assign'}
+            </button>
           </div>
         </div>` : ''}
       </div>`;
@@ -1197,22 +1208,23 @@ async function buildTechDropdown(ticketId, hub) {
     filtered.map(t => `<option value="${t.mobile}|${t.name}|${t.role}">${t.name} · ${t.role}</option>`).join('');
 }
 
-async function quickAssign(ticketId, chassisNo, ticketHub) {
+async function quickAssign(ticketId, chassisNo, ticketHub, isReassign=false) {
   const sel = document.getElementById('tech-sel-' + ticketId);
   if (!sel || !sel.value) { toast('Select a technician first','error'); return; }
-  const [techMobile, techName, techRole] = sel.value.split('|');
+  const [techMobile, techName] = sel.value.split('|');
   const btn = document.getElementById('assign-btn-' + ticketId);
-  if (btn) btn.textContent = '⏳';
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   const res = await api('assignRepair', {
     ticketId, chassisNo,
     hub: ticketHub || currentUser.hub,
     leadMobile: currentUser.mobile,
     leadName: currentUser.name,
     techMobile, techName,
+    isReassign, reassignReason: isReassign ? 'Reassigned from ticket list' : '',
   });
-  if (btn) btn.textContent = 'Assign';
+  if (btn) { btn.textContent = isReassign ? '🔄' : 'Assign'; btn.disabled = false; }
   if (res.error) { toast(res.error,'error'); return; }
-  toast('✅ Assigned to ' + techName,'success');
+  toast((isReassign ? '🔄 Reassigned to ' : '✅ Assigned to ') + techName, 'success');
   loadDAList();
 }
 function filterDAStatus(status, el) {
@@ -1232,13 +1244,28 @@ async function viewDATicket(ticketId) {
   if (res.error) { toast(res.error,'error'); return; }
   const t = res.ticket, parts = res.parts || [];
 
-  // For lead tech — show assign option
   const r = currentUser.role;
-  const CAN_ASSIGN = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
-  const canAssign = CAN_ASSIGN.includes(r);
-  const assignSection = canAssign ? `
-    <div class="detail-section">
-      <h3>Assign to Technician</h3>
+  const CAN_ASSIGN_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
+  const roleCanAssign = CAN_ASSIGN_ROLES.some(ar => r === ar || r.includes(ar) || ar.includes(r));
+
+  // ASSIGN — ticket is Open or Insurance Approved
+  const canAssign = roleCanAssign && ['Open','Insurance Approved'].includes(t.Status);
+
+  // REASSIGN — ticket is Assigned or In Repair (can change technician)
+  const canReassign = roleCanAssign && ['Assigned','In Repair'].includes(t.Status);
+
+  const currentTechRow = (t.Assigned_To || t.Assigned_To_Mobile)
+    ? `<div class="detail-row" style="margin-bottom:10px">
+        <span style="color:var(--text2)">Currently Assigned To</span>
+        <span style="color:var(--warning);font-weight:700">${t.Assigned_To || '—'}</span>
+       </div>` : '';
+
+  const assignSection = (canAssign || canReassign) ? `
+    <div class="detail-section" style="border-color:${canReassign ? 'var(--warning)' : 'var(--primary)'}">
+      <h3 style="color:${canReassign ? 'var(--warning)' : 'var(--primary)'}">
+        ${canReassign ? '🔄 Reassign Technician' : '🔧 Assign to Technician'}
+      </h3>
+      ${canReassign ? currentTechRow : ''}
       <div class="field-group">
         <label>Select Technician <span style="color:var(--text3);font-size:11px">(${t.Hub} hub only)</span></label>
         <select id="assign-tech-sel"
@@ -1247,7 +1274,16 @@ async function viewDATicket(ticketId) {
           <option value="">👆 Tap to load technicians</option>
         </select>
       </div>
-      <button class="btn btn-primary" onclick="assignTicketFromDetail('${ticketId}','${t.Chassis_No}','${t.Hub}')">🔧 Assign Repair</button>
+      ${canReassign ? `
+      <div class="field-group">
+        <label>Reason for Reassignment</label>
+        <input type="text" id="reassign-reason" placeholder="e.g. Technician on leave, better skill match..."
+          style="width:100%;background:var(--surface3);border:1.5px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px">
+      </div>` : ''}
+      <button class="btn ${canReassign ? 'btn-warning' : 'btn-primary'}"
+        onclick="assignTicketFromDetail('${ticketId}','${t.Chassis_No}','${t.Hub}',${canReassign})">
+        ${canReassign ? '🔄 Confirm Reassignment' : '🔧 Assign Repair'}
+      </button>
     </div>` : '';
 
   document.getElementById('da-list-content').innerHTML = `
@@ -1299,17 +1335,23 @@ async function loadDetailTechs(hub) {
   sel.dataset.loaded = hub;
 }
 
-async function assignTicketFromDetail(ticketId, chassisNo, hub) {
+async function assignTicketFromDetail(ticketId, chassisNo, hub, isReassign=false) {
   const sel = document.getElementById('assign-tech-sel');
-  if (!sel || !sel.value) { toast('Select a technician','error'); return; }
+  if (!sel || !sel.value) { toast('Select a technician first','error'); return; }
   const [techMobile, techName] = sel.value.split('|');
+  if (isReassign) {
+    const reason = (document.getElementById('reassign-reason')||{}).value || 'Reassigned';
+    if (!reason.trim()) { toast('Enter reason for reassignment','error'); return; }
+  }
+  const reason = isReassign ? ((document.getElementById('reassign-reason')||{}).value || 'Reassigned') : '';
   const res = await api('assignRepair', {
     ticketId, chassisNo, hub,
     leadMobile: currentUser.mobile, leadName: currentUser.name,
     techMobile, techName,
+    isReassign, reassignReason: reason,
   });
   if (res.error) { toast(res.error,'error'); return; }
-  toast('✅ Assigned to ' + techName,'success');
+  toast((isReassign ? '🔄 Reassigned to ' : '✅ Assigned to ') + techName, 'success');
   loadDAList();
 }
 
