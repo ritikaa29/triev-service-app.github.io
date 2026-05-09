@@ -550,10 +550,86 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   <div class="topbar">
     <span class="back" onclick="goHome()">←</span>
     <h1>📦 Inventory</h1>
+    <button class="btn btn-success btn-sm" onclick="showScreen('inv-add-screen')" style="width:auto">+ Add Stock</button>
   </div>
   <div class="content">
-    <input type="search" class="search-box" id="inv-search" placeholder="Search parts..." oninput="filterInventory()">
+    <div class="tabs" id="inv-tabs">
+      <div class="tab active" onclick="switchInvTab('stock',this)">Stock Levels</div>
+      <div class="tab" onclick="switchInvTab('dashboard',this)">Dashboard</div>
+      <div class="tab" onclick="switchInvTab('log',this)">Usage Log</div>
+    </div>
+    <input type="search" class="search-box" id="inv-search" placeholder="Search parts..." oninput="filterInventory()" style="margin-bottom:10px">
     <div id="inv-content"><div class="loading"><div class="spinner"></div><span>Loading inventory...</span></div></div>
+  </div>
+</div>
+
+<!-- ADD STOCK / PURCHASE ENTRY SCREEN -->
+<div id="inv-add-screen" class="screen">
+  <div class="topbar">
+    <span class="back" onclick="showScreen('inventory-screen');loadInventory()">←</span>
+    <h1>➕ Add Stock / Purchase</h1>
+  </div>
+  <div class="content">
+    <div class="field-group">
+      <label>Transaction Type</label>
+      <select id="inv-add-type">
+        <option value="Purchase">Purchase (New Stock In)</option>
+        <option value="Opening Balance">Opening Balance</option>
+        <option value="Return">Return from Hub</option>
+        <option value="Transfer In">Transfer In</option>
+        <option value="Adjustment">Adjustment / Correction</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>Hub</label>
+      <select id="inv-add-hub">
+        <option value="Indirapuram">Indirapuram</option>
+        <option value="Chhatarpur">Chhatarpur</option>
+        <option value="Nangli">Nangli</option>
+        <option value="Gurgaon">Gurgaon</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>OEM</label>
+      <select id="inv-add-oem" onchange="loadInvPartsList()">
+        <option value="Ampere">Ampere</option>
+        <option value="Motovolt">Motovolt</option>
+        <option value="Shema">Shema</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>Category</label>
+      <select id="inv-add-cat" onchange="loadInvPartsList()">
+        <option value="ABS Spare Parts">ABS Spare Parts</option>
+        <option value="Consumables">Consumables</option>
+        <option value="Electrical Spare Parts">Electrical Spare Parts</option>
+        <option value="Metal Spare Parts">Metal Spare Parts</option>
+        <option value="PP Spare Parts">PP Spare Parts</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>Part</label>
+      <select id="inv-add-part">
+        <option value="">— Select Part —</option>
+      </select>
+    </div>
+    <div class="field-group">
+      <label>Quantity</label>
+      <input type="number" id="inv-add-qty" value="1" min="1" placeholder="Qty">
+    </div>
+    <div class="field-group">
+      <label>Unit Price ₹</label>
+      <input type="number" id="inv-add-price" value="0" min="0" placeholder="Unit price">
+    </div>
+    <div class="field-group">
+      <label>Supplier / Remarks</label>
+      <input type="text" id="inv-add-remarks" placeholder="Supplier name or remarks">
+    </div>
+    <div class="field-group">
+      <label>Invoice / Reference No</label>
+      <input type="text" id="inv-add-ref" placeholder="Invoice or reference number">
+    </div>
+    <button class="btn btn-success" onclick="submitStockIn()">✅ Add Stock</button>
   </div>
 </div>
 
@@ -2090,47 +2166,216 @@ async function closeRR(ticketId) {
 // ═══════════════════════════════════════════════════════════
 // INVENTORY
 // ═══════════════════════════════════════════════════════════
+let invTab = 'stock';
+
 async function loadInventory() {
-  const hub = ['Super Admin','Admin','Service Head'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  document.getElementById('inv-content').innerHTML = '<div class="loading"><div class="spinner"></div><span>Loading...</span></div>';
+  const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
   const res = await api('getInventory', { hub });
   allInventory = res.inventory || [];
+  // Set hub dropdown on add screen
+  const hubSel = document.getElementById('inv-add-hub');
+  if (hubSel && currentUser.hub) hubSel.value = currentUser.hub;
+  loadInvPartsList();
+  renderInventory();
+}
+
+function switchInvTab(tab, el) {
+  invTab = tab;
+  document.querySelectorAll('#inv-tabs .tab').forEach(t => t.classList.remove('active'));
+  if (el) el.classList.add('active');
   renderInventory();
 }
 
 function renderInventory() {
   const q = (document.getElementById('inv-search')?.value||'').toLowerCase();
-  const items = q ? allInventory.filter(i => (i.Part_Name||'').toLowerCase().includes(q) || (i.Part_ID||'').toLowerCase().includes(q)) : allInventory;
-  document.getElementById('inv-content').innerHTML = items.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No inventory data. Add stock in the Inventory sheet.</p>'
-    : items.map(i => {
-        const closing = Number(i.Closing_Stock||0);
-        const reorder = Number(i.Reorder_Level||0);
-        const low = closing <= reorder && reorder > 0;
-        return `<div class="ticket-card" style="${low?'border-color:var(--danger)':''}">
-          <div class="ticket-header">
-            <span class="ticket-id">${i.Part_ID}</span>
-            ${low?'<span class="status-badge" style="background:rgba(239,68,68,.2);color:var(--danger)">⚠ Low</span>':''}
-          </div>
-          <div class="ticket-title">${i.Part_Name}</div>
-          <div class="ticket-meta"><span class="tag tag-blue">${i.OEM}</span><span class="tag tag-grey">${i.Category}</span><span class="tag tag-teal">${i.Hub}</span></div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:8px">
-            <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
-              <div style="font-size:18px;font-weight:700;color:var(--primary)">${i.Closing_Stock||0}</div>
-              <div style="font-size:10px;color:var(--text3)">CLOSING</div>
-            </div>
-            <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
-              <div style="font-size:18px;font-weight:700;color:var(--success)">${i.Stock_In||0}</div>
-              <div style="font-size:10px;color:var(--text3)">IN</div>
-            </div>
-            <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
-              <div style="font-size:18px;font-weight:700;color:var(--orange)">${i.Stock_Used||0}</div>
-              <div style="font-size:10px;color:var(--text3)">USED</div>
-            </div>
-          </div>
-        </div>`;
-      }).join('');
+  let items = q ? allInventory.filter(i => (i.Part_Name||'').toLowerCase().includes(q) || (i.Part_ID||'').toLowerCase().includes(q)) : allInventory;
+
+  if (invTab === 'dashboard') {
+    renderInvDashboard(items); return;
+  }
+  if (invTab === 'log') {
+    loadInvLog(); return;
+  }
+
+  // Stock Levels tab
+  if (items.length === 0) {
+    document.getElementById('inv-content').innerHTML = '<p style="text-align:center;color:var(--text2);padding:40px">No inventory data. Use "+ Add Stock" to add parts.</p>';
+    return;
+  }
+
+  // Sort: low stock first
+  items = [...items].sort((a,b) => {
+    const aLow = Number(a.Closing_Stock||0) <= Number(a.Reorder_Level||0);
+    const bLow = Number(b.Closing_Stock||0) <= Number(b.Reorder_Level||0);
+    return bLow - aLow;
+  });
+
+  document.getElementById('inv-content').innerHTML = items.map(i => {
+    const closing = Number(i.Closing_Stock||0);
+    const opening = Number(i.Opening_Stock||0);
+    const stockIn = Number(i.Stock_In||0);
+    const used    = Number(i.Stock_Used||0);
+    const reorder = Number(i.Reorder_Level||0);
+    const low = closing <= reorder && reorder > 0;
+    const stockColor = closing <= 0 ? 'var(--danger)' : closing <= 2 ? 'var(--warning)' : 'var(--success)';
+    return `<div class="ticket-card" style="border-left:4px solid ${stockColor};margin-bottom:10px">
+      <div class="ticket-header">
+        <div>
+          <div style="font-weight:700;font-size:14px">${i.Part_Name}</div>
+          <div style="font-size:11px;color:var(--text3)">${i.Part_ID}</div>
+        </div>
+        ${low ? '<span class="tag tag-red">⚠ Low Stock</span>' : ''}
+      </div>
+      <div class="ticket-meta" style="margin-top:4px">
+        <span class="tag tag-blue">${i.OEM}</span>
+        <span class="tag tag-grey">${i.Category}</span>
+        <span class="tag tag-teal">${i.Hub}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px">
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
+          <div style="font-size:16px;font-weight:700;color:var(--text2)">${opening}</div>
+          <div style="font-size:9px;color:var(--text3);text-transform:uppercase">Opening</div>
+        </div>
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
+          <div style="font-size:16px;font-weight:700;color:var(--success)">+${stockIn}</div>
+          <div style="font-size:9px;color:var(--text3);text-transform:uppercase">Stock In</div>
+        </div>
+        <div style="text-align:center;background:var(--surface2);border-radius:8px;padding:8px">
+          <div style="font-size:16px;font-weight:700;color:var(--orange)">-${used}</div>
+          <div style="font-size:9px;color:var(--text3);text-transform:uppercase">Used Out</div>
+        </div>
+        <div style="text-align:center;background:rgba(0,0,0,.2);border-radius:8px;padding:8px;border:1px solid ${stockColor}">
+          <div style="font-size:18px;font-weight:800;color:${stockColor}">${closing}</div>
+          <div style="font-size:9px;color:var(--text3);text-transform:uppercase">Closing</div>
+        </div>
+      </div>
+      ${reorder > 0 ? '<div style="font-size:11px;color:var(--text3);margin-top:6px">Reorder Level: '+reorder+' · Last Updated: '+fmtDate(i.Last_Updated)+'</div>' : ''}
+    </div>`;
+  }).join('');
 }
+
+function renderInvDashboard(items) {
+  const totalParts = items.length;
+  const lowStock   = items.filter(i => Number(i.Closing_Stock||0) <= Number(i.Reorder_Level||0) && Number(i.Reorder_Level||0) > 0);
+  const zeroStock  = items.filter(i => Number(i.Closing_Stock||0) <= 0);
+  const totalIn    = items.reduce((s,i) => s+Number(i.Stock_In||0), 0);
+  const totalUsed  = items.reduce((s,i) => s+Number(i.Stock_Used||0), 0);
+
+  // By Hub
+  const byHub = {};
+  items.forEach(i => {
+    const h = i.Hub||'Unknown';
+    if (!byHub[h]) byHub[h] = {parts:0, closing:0, used:0};
+    byHub[h].parts++;
+    byHub[h].closing += Number(i.Closing_Stock||0);
+    byHub[h].used    += Number(i.Stock_Used||0);
+  });
+
+  document.getElementById('inv-content').innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
+      <div class="stat-card"><div class="stat-num" style="color:var(--primary)">${totalParts}</div><div class="stat-label">Total Parts</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--danger)">${zeroStock.length}</div><div class="stat-label">Zero Stock</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--warning)">${lowStock.length}</div><div class="stat-label">Low Stock</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--orange)">${totalUsed}</div><div class="stat-label">Total Used</div></div>
+    </div>
+    <div class="section-hdr">By Hub</div>
+    ${Object.entries(byHub).map(([hub, d]) => `
+      <div style="background:var(--surface2);border-radius:var(--radius);padding:14px;margin-bottom:8px">
+        <div style="font-weight:700;margin-bottom:8px">📍 ${hub}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center">
+          <div><div style="font-size:20px;font-weight:700;color:var(--primary)">${d.parts}</div><div style="font-size:10px;color:var(--text3)">PARTS</div></div>
+          <div><div style="font-size:20px;font-weight:700;color:var(--success)">${d.closing}</div><div style="font-size:10px;color:var(--text3)">IN STOCK</div></div>
+          <div><div style="font-size:20px;font-weight:700;color:var(--orange)">${d.used}</div><div style="font-size:10px;color:var(--text3)">USED</div></div>
+        </div>
+      </div>`).join('')}
+    ${lowStock.length > 0 ? `
+    <div class="section-hdr" style="color:var(--danger)">⚠ Low / Zero Stock Alert</div>
+    ${lowStock.map(i => `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div>
+          <div style="font-size:13px;font-weight:600">${i.Part_Name}</div>
+          <div style="font-size:11px;color:var(--text3)">${i.Hub} · ${i.OEM}</div>
+        </div>
+        <div style="text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--danger)">${i.Closing_Stock||0}</div>
+          <div style="font-size:9px;color:var(--text3)">STOCK</div>
+        </div>
+      </div>`).join('')}` : ''}`;
+}
+
+async function loadInvLog() {
+  document.getElementById('inv-content').innerHTML = '<div class="loading"><div class="spinner"></div><span>Loading log...</span></div>';
+  const hub = ['Super Admin','Admin','Service Head'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  const res = await api('getInventoryLog', { hub });
+  const logs = res.logs || [];
+  if (logs.length === 0) {
+    document.getElementById('inv-content').innerHTML = '<p style="text-align:center;color:var(--text2);padding:40px">No usage log yet.</p>';
+    return;
+  }
+  document.getElementById('inv-content').innerHTML = logs.slice(0,50).map(l => `
+    <div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:6px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-size:13px;font-weight:600">${l.Part_Name||'—'}</div>
+          <div style="font-size:11px;color:var(--text3)">${l.Part_ID} · ${l.Hub}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px">
+            ${l.Usage_Type==='Purchase'||l.Usage_Type==='Opening Balance'||l.Usage_Type==='STOCK_IN'
+              ? '<span style="color:var(--success)">+'+l.Qty+'</span>'
+              : '<span style="color:var(--danger)">-'+l.Qty+'</span>'}
+            · ${l.Usage_Type} · ₹${Number(l.Total_Cost||0).toLocaleString('en-IN')}
+          </div>
+          <div style="font-size:11px;color:var(--text3)">${l.Ticket_ID||'—'} · ${l.Name||'—'}</div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);text-align:right">${fmtDate(l.Timestamp)}</div>
+      </div>
+    </div>`).join('');
+}
+
 function filterInventory() { renderInventory(); }
+
+// Load parts list for add stock form
+function loadInvPartsList() {
+  const oem = document.getElementById('inv-add-oem')?.value;
+  const cat = document.getElementById('inv-add-cat')?.value;
+  const sel = document.getElementById('inv-add-part');
+  if (!sel || !oem || !cat) return;
+  const parts = (PARTS_CATALOG[normaliseOEM(oem)]||{})[cat] || [];
+  sel.innerHTML = '<option value="">— Select Part —</option>' +
+    parts.map(p => '<option value="'+p.id+'|'+p.code+'|'+encodeURIComponent(p.name)+'">'+p.name+'</option>').join('');
+}
+
+async function submitStockIn() {
+  const type    = document.getElementById('inv-add-type').value;
+  const hub     = document.getElementById('inv-add-hub').value;
+  const oem     = document.getElementById('inv-add-oem').value;
+  const cat     = document.getElementById('inv-add-cat').value;
+  const partVal = document.getElementById('inv-add-part').value;
+  const qty     = parseInt(document.getElementById('inv-add-qty').value)||0;
+  const price   = parseFloat(document.getElementById('inv-add-price').value)||0;
+  const remarks = document.getElementById('inv-add-remarks').value;
+  const ref     = document.getElementById('inv-add-ref').value;
+
+  if (!partVal) { toast('Select a part','error'); return; }
+  if (qty <= 0) { toast('Enter valid quantity','error'); return; }
+
+  const [partId, partCode, partNameEnc] = partVal.split('|');
+  const partName = decodeURIComponent(partNameEnc);
+
+  const res = await api('addStockIn', {
+    hub, oem, category: cat,
+    partId, partCode, partName,
+    qty, unitPrice: price,
+    transactionType: type,
+    remarks: remarks + (ref ? ' | Ref: '+ref : ''),
+    mobile: currentUser.mobile, name: currentUser.name,
+  });
+
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('✅ Stock updated! '+qty+' '+partName+' added to '+hub,'success');
+  showScreen('inventory-screen');
+  loadInventory();
+}
 
 // ═══════════════════════════════════════════════════════════
 // INSURANCE
@@ -2185,50 +2430,65 @@ async function loadPartsRequests() {
 
   const all = res.requests || [];
   const pending = all.filter(r => r.Status === 'Pending');
-  const decided = all.filter(r => r.Status !== 'Pending').slice(0, 20);
+  const decided = all.filter(r => r.Status !== 'Pending').slice(0,15);
 
-  // ── GROUP pending requests by Ticket_ID ──
+  // Group by Ticket_ID
   const byTicket = {};
   pending.forEach(r => {
-    const tid = r.Ticket_ID || 'Unknown';
-    if (!byTicket[tid]) byTicket[tid] = [];
-    byTicket[tid].push(r);
+    if (!byTicket[r.Ticket_ID]) byTicket[r.Ticket_ID] = [];
+    byTicket[r.Ticket_ID].push(r);
   });
 
-  const pendingHtml = pending.length === 0
+  const ticketCount = Object.keys(byTicket).length;
+
+  const pendingHtml = ticketCount === 0
     ? '<div style="text-align:center;padding:30px;color:var(--text2)">✅ No pending requests</div>'
     : Object.entries(byTicket).map(([ticketId, parts]) => {
         const first = parts[0];
-        const allReqIds = parts.map(p => p.Request_ID).join(',');
+        const allIds = parts.map(p => p.Request_ID).join(',');
+        const partsRows = parts.map(p => `
+          <div style="padding:10px 0;border-bottom:1px solid var(--border)">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+              <div style="flex:1">
+                <div style="font-size:13px;font-weight:600;margin-bottom:2px">${p.Part_Name}</div>
+                <div style="font-size:11px;color:var(--text3)">${p.Part_ID} · ${p.Category||''}</div>
+                <div style="font-size:11px;color:var(--text2);margin-top:2px">Qty Requested: <b>${p.Qty_Requested}</b></div>
+                ${p.Remarks ? '<div style="font-size:11px;color:var(--warning);margin-top:2px">📝 '+p.Remarks+'</div>' : ''}
+              </div>
+              <div id="stock-${p.Part_ID}-${ticketId}" style="font-size:11px;color:var(--text3);text-align:right;flex-shrink:0">
+                <div style="font-size:10px;color:var(--text3)">Stock</div>
+                <div style="font-weight:700;color:var(--text2)">—</div>
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <button class="btn btn-success btn-sm" onclick="decideOne('${p.Request_ID}','Approved','${ticketId}')" style="flex:1;font-size:12px">✅ Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="decideOne('${p.Request_ID}','Rejected','${ticketId}')" style="flex:1;font-size:12px">❌ Reject</button>
+            </div>
+          </div>`).join('');
+
         return `
-        <div class="ticket-card" style="border-color:var(--warning);margin-bottom:14px">
-          <div class="ticket-header">
-            <span class="ticket-id">${ticketId}</span>
-            <span class="status-badge s-open">${parts.length} part${parts.length>1?'s':''} pending</span>
+        <div class="ticket-card" style="border-color:var(--warning);padding:0;overflow:hidden;margin-bottom:12px">
+          <div style="padding:14px;cursor:pointer;background:var(--surface)" onclick="togglePRTicket('pr-body-${ticketId}', this)">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span class="ticket-id">${ticketId}</span>
+              <span class="tag tag-yellow">${parts.length} part${parts.length>1?'s':''} pending</span>
+            </div>
+            <div style="margin-top:6px">
+              <div style="font-size:13px;font-weight:600">${first.Chassis_No||'—'}</div>
+              <div style="font-size:12px;color:var(--text2);margin-top:2px">
+                🔧 ${first.Tech_Name||'—'} · 📍 ${first.Hub||'—'} · 🕐 ${fmtDate(first.Raised_At)}
+              </div>
+            </div>
+            <div style="font-size:11px;color:var(--text3);margin-top:4px">▼ Tap to see parts & stock</div>
           </div>
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px">
-            <span class="tag tag-teal">🔧 ${first.Tech_Name||'—'}</span>
-            <span class="tag tag-blue">${first.Hub||'—'}</span>
-            <span class="tag tag-grey">${fmtDate(first.Raised_At)}</span>
-          </div>
-          <div style="background:var(--surface3);border-radius:8px;padding:10px;margin-bottom:10px">
-            <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;margin-bottom:8px">Parts Requested:</div>
-            ${parts.map(p => `
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">
-                <div>
-                  <div style="font-size:13px;font-weight:600">${p.Part_Name}</div>
-                  <div style="font-size:11px;color:var(--text3)">${p.Part_ID} · ${p.Category||''} · Qty: ${p.Qty_Requested}</div>
-                  ${p.Remarks ? '<div style="font-size:11px;color:var(--warning)">📝 ' + p.Remarks + '</div>' : ''}
-                </div>
-                <div style="display:flex;gap:6px;flex-shrink:0;margin-left:8px">
-                  <button class="btn btn-success btn-sm" onclick="decideOne('${p.Request_ID}','Approved','${ticketId}')" style="padding:5px 10px;font-size:11px">✅</button>
-                  <button class="btn btn-danger btn-sm" onclick="decideOne('${p.Request_ID}','Rejected','${ticketId}')" style="padding:5px 10px;font-size:11px">❌</button>
-                </div>
-              </div>`).join('')}
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-success" onclick="approveAll('${allReqIds}','${ticketId}')" style="flex:1">✅ Approve All ${parts.length} Parts</button>
-            <button class="btn btn-danger btn-sm" onclick="rejectAll('${allReqIds}','${ticketId}')" style="flex:1">❌ Reject All</button>
+          <div id="pr-body-${ticketId}" style="display:none;padding:0 14px 14px">
+            <div style="border-top:1px solid var(--border);padding-top:10px">
+              ${partsRows}
+            </div>
+            <div style="display:flex;gap:8px;margin-top:12px">
+              <button class="btn btn-success" onclick="approveAll('${allIds}','${ticketId}')" style="flex:1">✅ Approve All ${parts.length} Parts</button>
+              <button class="btn btn-danger btn-sm" onclick="rejectAll('${allIds}','${ticketId}')" style="flex:1;font-size:12px">❌ Reject All</button>
+            </div>
           </div>
         </div>`;
       }).join('');
@@ -2239,47 +2499,78 @@ async function loadPartsRequests() {
       <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--surface2);border-radius:8px;margin-bottom:6px">
         <div>
           <div style="font-size:12px;font-weight:600">${r.Part_Name} ×${r.Qty_Requested}</div>
-          <div style="font-size:11px;color:var(--text3)">${r.Ticket_ID} · ${r.Chassis_No||'—'} · ${r.Tech_Name||'—'} · ${fmtDate(r.Approved_At)}</div>
+          <div style="font-size:11px;color:var(--text3)">${r.Ticket_ID} · ${r.Chassis_No||'—'} · ${r.Tech_Name||'—'}</div>
+          <div style="font-size:11px;color:var(--text3)">${fmtDate(r.Approved_At)}</div>
         </div>
         <span class="status-badge ${r.Status==='Approved'?'s-rfd':'s-closed'}">${r.Status}</span>
       </div>`).join('')}`;
 
   el.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <span class="section-hdr" style="margin:0">Pending (${Object.keys(byTicket).length} tickets · ${pending.length} parts)</span>
+      <div>
+        <div style="font-size:14px;font-weight:700">${ticketCount} Job Card${ticketCount!==1?'s':''} · ${pending.length} Parts Pending</div>
+        <div style="font-size:11px;color:var(--text3)">Tap a job card to view parts & stock</div>
+      </div>
       <button class="btn btn-ghost btn-sm" onclick="loadPartsRequests()">🔄</button>
     </div>
     ${pendingHtml}
     ${historyHtml}`;
+
+  // Load stock levels for all pending parts
+  loadStockForPending(pending, hub);
 }
 
-// Approve/reject a single part
+// Load stock levels and show next to each part
+async function loadStockForPending(parts, hub) {
+  const invRes = await api('getInventory', { hub });
+  if (!invRes.inventory) return;
+  const inv = invRes.inventory;
+  parts.forEach(p => {
+    const item = inv.find(i => i.Part_ID === p.Part_ID && (i.Hub === p.Hub || hub === 'ALL'));
+    const el = document.getElementById('stock-' + p.Part_ID + '-' + p.Ticket_ID);
+    if (!el) return;
+    if (item) {
+      const closing = Number(item.Closing_Stock || 0);
+      const color = closing <= 0 ? 'var(--danger)' : closing <= 2 ? 'var(--warning)' : 'var(--success)';
+      el.innerHTML = '<div style="font-size:10px;color:var(--text3)">In Stock</div>' +
+        '<div style="font-weight:700;color:' + color + ';font-size:14px">' + closing + '</div>';
+    } else {
+      el.innerHTML = '<div style="font-size:10px;color:var(--text3)">In Stock</div>' +
+        '<div style="font-weight:700;color:var(--text3)">N/A</div>';
+    }
+  });
+}
+
+function togglePRTicket(id, header) {
+  const body = document.getElementById(id);
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  const hint = header.querySelector('div:last-child');
+  if (hint) hint.textContent = isOpen ? '▼ Tap to see parts & stock' : '▲ Tap to collapse';
+}
+
 async function decideOne(reqId, decision, ticketId) {
-  const btn = event.target;
-  btn.disabled = true;
-  const reason = decision === 'Rejected' ? (prompt('Rejection reason:') || 'Rejected') : '';
-  if (decision === 'Rejected' && reason === null) { btn.disabled = false; return; }
+  let reason = '';
+  if (decision === 'Rejected') {
+    reason = prompt('Rejection reason (e.g. Out of stock):') || '';
+    if (reason === null) return;
+  }
   const res = await api('approvePartsRequest', {
     reqId, decision, remarks: reason,
     managerMobile: currentUser.mobile, managerName: currentUser.name, ticketId,
   });
-  btn.disabled = false;
   if (res.error) { toast(res.error, 'error'); return; }
   toast(decision === 'Approved' ? '✅ Approved' : '❌ Rejected', 'success');
   loadPartsRequests();
 }
 
-// Approve ALL parts for a ticket at once
 async function approveAll(reqIdsStr, ticketId) {
   const reqIds = reqIdsStr.split(',');
-  const btn = event.target; btn.disabled = true;
-  btn.textContent = '⏳ Approving...';
+  const btn = event.target; btn.disabled = true; btn.textContent = '⏳ Approving...';
   let ok = 0;
   for (const reqId of reqIds) {
-    const res = await api('approvePartsRequest', {
-      reqId, decision: 'Approved',
-      managerMobile: currentUser.mobile, managerName: currentUser.name, ticketId,
-    });
+    const res = await api('approvePartsRequest', { reqId, decision: 'Approved', managerMobile: currentUser.mobile, managerName: currentUser.name, ticketId });
     if (!res.error) ok++;
   }
   btn.disabled = false;
@@ -2287,23 +2578,19 @@ async function approveAll(reqIdsStr, ticketId) {
   loadPartsRequests();
 }
 
-// Reject ALL parts for a ticket
 async function rejectAll(reqIdsStr, ticketId) {
   const reason = prompt('Reason for rejecting all parts:');
   if (!reason) return;
   const reqIds = reqIdsStr.split(',');
   for (const reqId of reqIds) {
-    await api('approvePartsRequest', {
-      reqId, decision: 'Rejected', remarks: reason,
-      managerMobile: currentUser.mobile, managerName: currentUser.name, ticketId,
-    });
+    await api('approvePartsRequest', { reqId, decision: 'Rejected', remarks: reason, managerMobile: currentUser.mobile, managerName: currentUser.name, ticketId });
   }
   toast('❌ All parts rejected', 'success');
   loadPartsRequests();
 }
 
-// Legacy alias
 async function decidePartsReq(reqId, decision, ticketId) { await decideOne(reqId, decision, ticketId); }
+async function decidePartsReqWithReason(reqId, ticketId) { await decideOne(reqId, 'Rejected', ticketId); }
 async function decidePartsReqWithReason(reqId, ticketId) { await decideOne(reqId, 'Rejected', ticketId); }
 
 // ═══════════════════════════════════════════════════════════
