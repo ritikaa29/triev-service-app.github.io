@@ -632,7 +632,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbzMszte99D7IZ48avLM6lbNu7wfDz3bYKXz0Dd-TS5ejlmWtA_R7UT5rdSIvhBkaaqtzA/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbxN6Ycmo-VeKwpIzBWJH1Vxr5YAgI70J7NSZHKncZG6KlIvQgP63SAZQSQGF1YPacuauA/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -1444,7 +1444,17 @@ async function openRepairWork(ticketId) {
 
   // ── STATUS TIMELINE ─────────────────────────────────────
   const statusSteps = ['Assigned','Parts Requested','Parts Approved','In Repair','QC Pending','RFD'];
-  const curIdx = statusSteps.indexOf(t.Status);
+  // Map edge-case statuses to timeline steps
+  const statusMap = {
+    'Parts Requested': 'Parts Requested',
+    'Parts Approved':  'Parts Approved',
+    'Parts Partially Approved': 'Parts Requested',
+    'Insurance Approved': 'Assigned',
+    'QC Failed - Rework': 'In Repair',
+    'IOT Issue - Hold': 'QC Pending',
+  };
+  const mappedStatus = statusMap[t.Status] || t.Status;
+  const curIdx = statusSteps.indexOf(mappedStatus);
   const timelineHtml = `
     <div style="display:flex;align-items:center;gap:0;margin-bottom:16px;overflow-x:auto;padding-bottom:4px">
       ${statusSteps.map((s,i) => `
@@ -1498,7 +1508,10 @@ async function openRepairWork(ticketId) {
     </div>` : '';
 
   // ── TECH: RAISE PART REQUEST (only when Assigned / Parts Rejected) ──
-  const canRaiseRequest = isTech && ['Assigned','Parts Partially Approved'].includes(t.Status);
+  // Tech can raise request when: just assigned, or some parts rejected, or re-requesting
+  const hasRejected = preqs.some(pr => pr.Status === 'Rejected');
+  const canRaiseRequest = isTech && (t.Status === 'Assigned' || hasRejected);
+  const isWaiting = isTech && t.Status === 'Parts Requested' && !hasRejected;
   const raiseReqHtml = canRaiseRequest ? `
     <div class="detail-section" style="border-color:var(--primary)">
       <h3 style="color:var(--primary)">📦 Raise Parts Request</h3>
@@ -1565,6 +1578,8 @@ async function openRepairWork(ticketId) {
     </div>
     ${prHtml}
     ${tsHtml}
+    ${waitingHtml||''}
+    ${waitingHtml2||''}
     ${raiseReqHtml}
     ${startHtml}
     ${completeHtml}
