@@ -632,7 +632,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbxJwtzyKBdtTtkYZsFGKsg92HRDWi1ZUwWQ1OGppDinkEDz79_ZDcoj1QGOfPzZiUaiLg/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzVr7n-Qa7B5SdJHM5hriIFNe9ta-nDxxZaRJNMYcRyfa63u1QgKAU6GJvbebwLs65l2Q/exec';
 
 const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
@@ -929,6 +929,17 @@ function daBack() {
   document.getElementById('da-step2').style.display = 'none';
 }
 
+// Look up technician name from mobile number using cached data
+function getTechNameFromMobile(mobile) {
+  if (!mobile) return null;
+  // Search all cached hub technician lists
+  for (const hub in techniciansByHub) {
+    const tech = techniciansByHub[hub].find(t => String(t.mobile) === String(mobile));
+    if (tech) return tech.name;
+  }
+  return null;
+}
+
 // Normalise OEM name to match catalog keys
 // Vehicle_Master has 'MotoVolt', catalog has 'Motovolt', etc.
 function normaliseOEM(oem) {
@@ -1171,7 +1182,7 @@ function renderDAList() {
         <div class="ticket-sub" style="margin-top:4px" onclick="viewDATicket('${t.Ticket_ID}')">${fmtDate(t.Submitted_At)}</div>
         ${(showAssign || showReassign) ? `
         <div style="margin-top:10px">
-          ${showReassign && t.Assigned_To ? `<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ Currently: ${t.Assigned_To}</div>` : ''}
+          ${showReassign && t.Assigned_To ? `<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ Currently: ${t.Assigned_Tech_Name||t.Assigned_To}</div>` : ''}
           <div style="display:flex;gap:8px;align-items:center">
             <select id="tech-sel-${t.Ticket_ID}"
               style="flex:1;background:var(--surface3);border:1.5px solid ${showReassign ? 'var(--warning)' : 'var(--border)'};border-radius:8px;padding:9px 10px;color:var(--text);font-size:12px;outline:none"
@@ -1269,7 +1280,7 @@ async function viewDATicket(ticketId) {
   const currentTechRow = (t.Assigned_To || t.Assigned_To_Mobile)
     ? `<div class="detail-row" style="margin-bottom:10px">
         <span style="color:var(--text2)">Currently Assigned To</span>
-        <span style="color:var(--warning);font-weight:700">${t.Assigned_To || '—'}</span>
+        <span style="color:var(--warning);font-weight:700">${t.Assigned_Tech_Name || t.Assigned_To || '—'}</span>
        </div>` : '';
 
   const assignSection = (canAssign || canReassign) ? `
@@ -1413,7 +1424,7 @@ async function loadRepairMonitor() {
                 <span style="font-size:11px;color:var(--text2)">${t.Hub}</span>
               </div>
               <div class="ticket-title">${t.Chassis_No} · ${t.OEM}</div>
-              <div class="ticket-sub">Tech: ${t.Assigned_To||'—'} · Rider: ${t.Rider_ID}</div>
+              <div class="ticket-sub">Tech: ${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'} · Rider: ${t.Rider_ID}</div>
               <div class="ticket-sub" style="margin-top:3px;color:var(--text3)">Assigned: ${fmtDate(t.Assigned_At)}</div>
             </div>`).join('')}
         </div>`;
@@ -1469,7 +1480,7 @@ async function loadRepairQueue() {
               <span class="tag tag-grey">${t.Hub}</span>
             </div>
             <div class="ticket-title">${t.Chassis_No}</div>
-            <div class="ticket-sub">Assigned To: ${t.Assigned_To||'—'} · Rider: ${t.Rider_ID}</div>
+            <div class="ticket-sub">Assigned To: ${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'} · Rider: ${t.Rider_ID}</div>
             <div class="ticket-sub" style="margin-top:2px">${fmtDate(t.Assigned_At)}</div>
           </div>`;
         }).join(''));
@@ -1485,20 +1496,24 @@ async function openRepairWork(ticketId) {
     '<div class="loading"><div class="spinner"></div><span>Loading job card...</span></div>';
   showScreen('repair-work');
 
-  const [detailRes, prRes, evRes] = await Promise.all([
-    api('getDamageDetail',  { ticketId }),
-    api('getPartsRequests', { ticketId }),
-    api('getRepairEvents',  { ticketId }),
-  ]);
-
-  if (detailRes.error) { toast(detailRes.error,'error'); return; }
+  // Fetch sequentially — avoids one failure killing the whole screen
+  const detailRes = await api('getDamageDetail', { ticketId });
+  if (detailRes.error) {
+    document.getElementById('repair-work-content').innerHTML =
+      `<div style="padding:20px;color:var(--danger)">❌ Error loading ticket: ${detailRes.error}</div>
+       <button class="btn btn-ghost btn-sm" onclick="showScreen('repair-queue');loadRepairQueue()" style="margin:16px">← Back</button>`;
+    return;
+  }
+  const prRes  = await api('getPartsRequests', { ticketId });
+  const evRes  = await api('getRepairEvents',  { ticketId });
+  // Safety: if events sheet doesn't exist yet, treat as empty
   currentRepairTicket = detailRes;
   daSelectedParts = [];
 
   const t      = detailRes.ticket;
   const parts  = detailRes.parts || [];
-  const preqs  = (prRes.requests || []);
-  const events = (evRes.events || []);
+  const preqs  = (prRes && prRes.requests) ? prRes.requests : [];
+  const events = (evRes && evRes.events) ? evRes.events : [];
   const oem    = normaliseOEM(t.OEM || 'Ampere');
   const TECH_ONLY = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
   const isTech = TECH_ONLY.includes(currentUser.role);
@@ -1630,7 +1645,7 @@ async function openRepairWork(ticketId) {
       <div class="detail-row"><span>Hub</span><span>${t.Hub}</span></div>
       <div class="detail-row"><span>Category</span><span style="color:var(--orange);font-weight:700">${t.Damage_Category||'—'}</span></div>
       <div class="detail-row"><span>Status</span><span class="status-badge ${statusClass(t.Status)}">${t.Status}</span></div>
-      <div class="detail-row"><span>Assigned To</span><span>${t.Assigned_To||'—'}</span></div>
+      <div class="detail-row"><span>Assigned To</span><span>${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'}</span></div>
     </div>
     ${timelineHtml}
     ${bottleneckHtml}
