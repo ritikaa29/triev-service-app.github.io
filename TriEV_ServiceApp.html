@@ -320,7 +320,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div class="detail-row"><span>Model</span><span id="da-model">—</span></div>
           <div class="detail-row"><span>OEM</span><span id="da-oem">—</span></div>
           <div class="detail-row"><span>NBFC</span><span id="da-nbfc">—</span></div>
-          <div class="detail-row"><span>Hub</span><span id="da-hub-disp">—</span></div>
+          <div class="detail-row"><span>Registered Hub</span><span id="da-hub-disp" style="color:var(--text3)">—</span></div>
+        </div>
+        <div class="field-group">
+          <label>Submission Hub <span style="color:var(--primary);font-size:11px">(Where vehicle is being submitted today)</span></label>
+          <select id="da-submission-hub">
+            <option value="">— Select Hub —</option>
+            <option value="Indirapuram">Indirapuram</option>
+            <option value="Chhatarpur">Chhatarpur</option>
+            <option value="Nangli">Nangli</option>
+            <option value="Gurgaon">Gurgaon</option>
+          </select>
         </div>
         <div class="field-group">
           <label>Case Type</label>
@@ -870,13 +880,21 @@ async function lookupVehicle() {
   document.getElementById('da-model').textContent = daVehicle.Model || '—';
   document.getElementById('da-oem').textContent = daVehicle.OEM || '—';
   document.getElementById('da-nbfc').textContent = daVehicle.NBFC || '—';
-  document.getElementById('da-hub-disp').textContent = daVehicle.Hub || currentUser.hub;
+  document.getElementById('da-hub-disp').textContent = daVehicle.Hub || '—';
+  // Auto-select advisor's current hub as default submission hub
+  const subHubSel = document.getElementById('da-submission-hub');
+  if (subHubSel) {
+    // Pre-select advisor's own hub
+    subHubSel.value = currentUser.hub || '';
+  }
   document.getElementById('da-vehicle-info').style.display = 'block';
   toast('Vehicle found! ✅','success');
 }
 
 function daStep2() {
   if (!daVehicle) { toast('Lookup vehicle first','error'); return; }
+  const subHub = document.getElementById('da-submission-hub').value;
+  if (!subHub) { toast('Select submission hub','error'); return; }
   if (!document.getElementById('da-rider-id').value.trim()) { toast('Enter Rider ID','error'); return; }
   daSelectedParts = [];
   document.getElementById('da-step1').style.display = 'none';
@@ -1023,7 +1041,7 @@ async function submitDA() {
   if (daSelectedParts.length === 0) { toast('Select at least one damaged part','error'); return; }
 
   const payload = {
-    hub: daVehicle.Hub || currentUser.hub,
+    hub: document.getElementById('da-submission-hub').value || daVehicle.Hub || currentUser.hub,
     advisorMobile: currentUser.mobile,
     advisorName: currentUser.name,
     caseType: document.getElementById('da-case-type').value,
@@ -1058,6 +1076,7 @@ async function submitDA() {
   document.getElementById('da-step1').style.display = 'block';
   document.getElementById('da-step2').style.display = 'none';
   document.getElementById('da-rider-id').value = '';
+  const sh = document.getElementById('da-submission-hub'); if(sh) sh.value = '';
   goHome();
 }
 
