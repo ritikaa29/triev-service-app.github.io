@@ -720,54 +720,53 @@ async function pingServer() {
 // API CALL
 // ═══════════════════════════════════════════════════════════
 // ── API call — POST to Apps Script, 25s timeout, 1 auto-retry ──
-async function api(action, params={}, attempt=1) {
-  const TIMEOUT_MS = 25000;
-  try {
-    // Flatten objects to JSON strings for query params
+// ── API — uses XMLHttpRequest to avoid fetch+redirect+AbortController bug
+function apiXHR(action, params, timeoutMs) {
+  return new Promise((resolve) => {
     const flat = { action };
-    Object.entries(params).forEach(([k,v]) => {
+    Object.entries(params||{}).forEach(([k,v]) => {
       flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
     });
-
-    // Apps Script: GET with query string is most reliable (no CORS preflight)
     const qs  = new URLSearchParams(flat).toString();
     const url = API_URL + '?' + qs;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const xhr = new XMLHttpRequest();
+    let done = false;
 
-    const res = await fetch(url, {
-      method: 'GET',
-      redirect: 'follow',
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
 
-    const text = await res.text();
-    if (!text) return { error: 'Empty response from server' };
+    const timer = setTimeout(() => {
+      xhr.abort();
+      finish({ error: 'Timeout after ' + (timeoutMs/1000) + 's — server too slow' });
+    }, timeoutMs || 25000);
 
-    // Apps Script sometimes returns HTML error page — detect it
-    if (text.trim().startsWith('<')) {
-      if (attempt < 2) {
-        await new Promise(r => setTimeout(r, 1500));
-        return api(action, params, attempt + 1);
-      }
-      return { error: 'Server returned HTML — check Apps Script deployment' };
-    }
+    xhr.open('GET', url, true);
+    xhr.onload = () => {
+      const text = xhr.responseText || '';
+      if (!text) { finish({ error: 'Empty response' }); return; }
+      if (text.trim().startsWith('<')) { finish({ error: 'Server error — redeploy Apps Script' }); return; }
+      try { finish(JSON.parse(text)); }
+      catch(e) { finish({ error: 'Parse error: ' + text.slice(0,80) }); }
+    };
+    xhr.onerror   = () => finish({ error: 'Network error' });
+    xhr.onabort   = () => {};  // handled by timer
+    xhr.send();
+  });
+}
 
-    try { return JSON.parse(text); }
-    catch(e) { return { error: 'Parse error: ' + text.slice(0, 80) }; }
-
-  } catch(e) {
-    if (e.name === 'AbortError') {
-      if (attempt < 2) {
-        await new Promise(r => setTimeout(r, 2000));
-        return api(action, params, attempt + 1);
-      }
-      return { error: 'Request timed out (25s). Apps Script may be slow — try again.' };
-    }
-    return { error: 'Network error: ' + e.message };
+async function api(action, params={}, attempt=1) {
+  const result = await apiXHR(action, params, 25000);
+  // Auto-retry once on timeout
+  if (result.error && result.error.includes('Timeout') && attempt < 2) {
+    await new Promise(r => setTimeout(r, 1000));
+    return api(action, params, 2);
   }
+  return result;
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1581,16 +1580,26 @@ async function openRepairWork(ticketId) {
     </div>`;
   };
 
-  const detailRes = await api('getDamageDetail', { ticketId });
-  if (!detailRes || detailRes.error) { showErr('Ticket load failed: ' + (detailRes?.error||'No response')); return; }
+  // Step 1: getDamageDetail
+  const t1 = Date.now();
+  let detailRes;
+  try {
+    detailRes = await api('getDamageDetail', { ticketId });
+  } catch(e) {
+    showErr('getDamageDetail threw: ' + e.message);
+    return;
+  }
+  const t1ms = Date.now() - t1;
 
-  // These two are non-critical — don't block if they fail
+  if (!detailRes) { showErr('getDamageDetail returned null (took ' + t1ms + 'ms)'); return; }
+  if (detailRes.error) { showErr('getDamageDetail error (' + t1ms + 'ms): ' + detailRes.error); return; }
+  if (!detailRes.ticket) { showErr('getDamageDetail: no ticket in response. Keys: ' + Object.keys(detailRes).join(',')); return; }
+
+  // Step 2 & 3: non-critical, don't block
   let prRes = { requests: [] };
   let evRes = { events: [] };
-  try { prRes = await api('getPartsRequests', { ticketId }); } catch(e) {}
-  try { evRes = await api('getRepairEvents',  { ticketId }); } catch(e) {}
-  if (prRes && prRes.error) prRes = { requests: [] };
-  if (evRes && evRes.error) evRes = { events: [] };
+  try { const r = await api('getPartsRequests', { ticketId }); if (r && !r.error) prRes = r; } catch(e) {}
+  try { const r = await api('getRepairEvents',  { ticketId }); if (r && !r.error) evRes = r; } catch(e) {}
 
   clearInterval(loadTimer);
   // Safety: if events sheet doesn't exist yet, treat as empty
