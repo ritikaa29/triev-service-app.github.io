@@ -2,6 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<!-- TriEV Service App v3.0 - Build 20260509 -->
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -229,6 +233,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
   <div class="login-card">
     <div id="login-err" class="err-msg" style="display:none"></div>
+
     <div class="field-group">
       <label>Mobile Number</label>
       <input type="tel" id="inp-mobile" placeholder="Enter mobile number" maxlength="10">
@@ -320,7 +325,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
           <div class="detail-row"><span>Model</span><span id="da-model">—</span></div>
           <div class="detail-row"><span>OEM</span><span id="da-oem">—</span></div>
           <div class="detail-row"><span>NBFC</span><span id="da-nbfc">—</span></div>
-          <div class="detail-row"><span>Hub</span><span id="da-hub-disp">—</span></div>
+          <div class="detail-row"><span>Registered Hub</span><span id="da-hub-disp" style="color:var(--text3)">—</span></div>
+        </div>
+        <div class="field-group">
+          <label>Submission Hub <span style="color:var(--primary);font-size:11px">(Where vehicle is being submitted today)</span></label>
+          <select id="da-submission-hub">
+            <option value="">— Select Hub —</option>
+            <option value="Indirapuram">Indirapuram</option>
+            <option value="Chhatarpur">Chhatarpur</option>
+            <option value="Nangli">Nangli</option>
+            <option value="Gurgaon">Gurgaon</option>
+          </select>
         </div>
         <div class="field-group">
           <label>Case Type</label>
@@ -389,11 +404,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
   <div class="content">
     <input type="search" class="search-box" id="da-search" placeholder="Search ticket ID or chassis..." oninput="filterDA()">
-    <div class="tabs" id="da-status-tabs">
-      <div class="tab active" onclick="filterDAStatus('',this)">All</div>
-      <div class="tab" onclick="filterDAStatus('Open',this)">Open</div>
-      <div class="tab" onclick="filterDAStatus('Assigned',this)">Assigned</div>
-      <div class="tab" onclick="filterDAStatus('RFD',this)">RFD</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+      <div class="cat-tab active" onclick="filterDAStatus('',this)">All</div>
+      <div class="cat-tab" onclick="filterDAStatus('Open',this)">Open</div>
+      <div class="cat-tab" onclick="filterDAStatus('Assigned',this)">Assigned</div>
+      <div class="cat-tab" onclick="filterDAStatus('In Repair',this)">In Repair</div>
+      <div class="cat-tab" onclick="filterDAStatus('QC Pending',this)">QC</div>
+      <div class="cat-tab" onclick="filterDAStatus('RFD',this)">RFD</div>
+      <div class="cat-tab" onclick="filterDAStatus('Insurance Pending',this)">Insurance</div>
     </div>
     <div id="da-list-content"><div class="loading"><div class="spinner"></div><span>Loading tickets...</span></div></div>
   </div>
@@ -619,9 +637,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 // ═══════════════════════════════════════════════════════════
 // CONFIG — Replace with your deployed Apps Script URL
 // ═══════════════════════════════════════════════════════════
-const API_URL = 'https://script.google.com/macros/s/AKfycbxNwiQUahdPkZupiAv9LfvVajUrofgRmFo_Yl1qd9zw-5-Dicdciw25vhAR9dQoeAJy_A/exec';
+const API_URL = 'https://script.google.com/macros/s/AKfycbzCc9lN4BXmGHUX4DnQCv2pgO-Je5dqGzFNDYZHE4_uygwM2TiNS8Uv1RZWVe7fxGNOCw/exec';
 
-const HUBS = ['Indirapuram','Chhatarpur','Matiala','Gurgaon'];
+const HUBS = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
 
 const RUNNING_ISSUES = [
   'Brake Shoe','Brake Wire Change','Brake Drum Plate',
@@ -657,17 +675,15 @@ let publicHub = '';
 let publicSelectedIssues = [];
 let currentRepairTicket = null;
 let currentQCTicket = null;
+let techniciansByHub = {};   // cache: hub → [{mobile, name, role}]
 
 // ═══════════════════════════════════════════════════════════
 // APP INIT
 // ═══════════════════════════════════════════════════════════
 document.addEventListener('DOMContentLoaded', () => {
   const saved = sessionStorage.getItem('triev_user');
-  if (saved) {
-    currentUser = JSON.parse(saved);
-    showHome();
-  }
-  // Check if this is public QR form
+
+  // Check if this is public QR form first
   const urlParams = new URLSearchParams(window.location.search);
   const hub = urlParams.get('hub');
   if (hub) {
@@ -676,32 +692,84 @@ document.addEventListener('DOMContentLoaded', () => {
     showScreen('running-public');
     return;
   }
-  if (!saved) showScreen('login');
+
+  if (saved) {
+    currentUser = JSON.parse(saved);
+    showHome();
+  } else {
+    showScreen('login');
+
+  }
 });
+
+async function pingServer() {
+  const el = document.getElementById('api-ping-text');
+  if (!el) return;
+  // Non-blocking — user can login while ping runs
+  el.textContent = '⏳ Checking server...';
+  el.style.color = 'var(--text3)';
+  const urlEl = document.getElementById('api-url-display');
+  if (urlEl) urlEl.textContent = API_URL.slice(0,60) + '...';
+  const start = Date.now();
+  try {
+    const res = await apiXHR('ping', {}, 10000);
+    const ms = Date.now() - start;
+    if (!el) return;
+    if (res && res.success) {
+      el.textContent = '✅ Server online (' + ms + 'ms)';
+      el.style.color = 'var(--success)';
+    } else {
+      el.textContent = '⚠️ ' + (res?.error || 'Server not responding — try logging in anyway');
+      el.style.color = 'var(--warning)';
+    }
+  } catch(e) {
+    if (el) { el.textContent = '⚠️ Cannot reach server'; el.style.color = 'var(--warning)'; }
+  }
+}
 
 // ═══════════════════════════════════════════════════════════
 // API CALL
 // ═══════════════════════════════════════════════════════════
-async function api(action, params={}) {
+// ── API call — POST to Apps Script, 25s timeout, 1 auto-retry ──
+// ── API — handles Apps Script redirect correctly
+async function api(action, params={}, attempt=1) {
   try {
-    // Use GET with query params (Apps Script compatible)
-    const allParams = { action, ...params };
-    // Convert any object/array values to JSON strings for URL encoding
-    const flat = {};
-    Object.entries(allParams).forEach(([k,v]) => {
-      flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : v;
+    const flat = { action };
+    Object.entries(params||{}).forEach(([k,v]) => {
+      flat[k] = (typeof v === 'object' && v !== null) ? JSON.stringify(v) : String(v ?? '');
     });
     const qs = new URLSearchParams(flat).toString();
     const url = API_URL + '?' + qs;
-    const res = await fetch(url, { method: 'GET', redirect: 'follow' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const text = await res.text();
-    try { return JSON.parse(text); }
-    catch(e) { return { error: 'Bad server response. Check Apps Script deployment.' }; }
+
+    // Use fetch — Apps Script redirect works fine with fetch
+    // The key is NOT using AbortController (causes silent hang on redirect)
+    const timeoutPromise = new Promise(resolve =>
+      setTimeout(() => resolve({ error: 'Timeout — server slow, retry' }), 15000)
+    );
+    const fetchPromise = fetch(url, { method:'GET', redirect:'follow' })
+      .then(r => r.text())
+      .then(text => {
+        if (!text) return { error:'Empty response' };
+        if (text.trim().startsWith('<')) return { error:'Server HTML error — check deployment' };
+        try { return JSON.parse(text); }
+        catch(e) { return { error:'Parse error: '+text.slice(0,100) }; }
+      })
+      .catch(e => ({ error:'Fetch error: '+e.message }));
+
+    const result = await Promise.race([fetchPromise, timeoutPromise]);
+
+    if (result.error && result.error.includes('Timeout') && attempt < 2) {
+      await new Promise(r => setTimeout(r, 1500));
+      return api(action, params, 2);
+    }
+    return result;
   } catch(e) {
-    return { error: 'Server error: ' + e.message };
+    return { error: 'API error: ' + e.message };
   }
 }
+
+// Keep apiXHR as alias for pingServer
+function apiXHR(action, params, timeoutMs) { return api(action, params); }
 
 // ═══════════════════════════════════════════════════════════
 // SCREEN NAV
@@ -781,8 +849,7 @@ function showHome() {
   document.getElementById('home-hub-badge').textContent = u.hub;
 
   // Show daily role selector for technicians
-  const techRoles = ['Core Technician','Running Repair Technician','QC Technician'];
-  const isTech = techRoles.some(r => u.role.includes('Technician')) || u.role.includes('Technician');
+  const isTech = u.role.toLowerCase().includes('technician');
   document.getElementById('daily-role-selector').style.display = isTech ? 'block' : 'none';
 
   buildHomeCards();
@@ -791,23 +858,41 @@ function showHome() {
 
 function buildHomeCards() {
   const r = currentUser.role;
+  // Normalise plain "Technician" to "Core Technician" for card matching
+  const effectiveRole = (currentUser.role === 'Technician') ? 'Core Technician' : currentUser.role;
+
   const allCards = {
-    'damage-form':        { icon:'📋', title:'New Assessment', sub:'Submit vehicle damage', color:'orange', roles:['Advisor'] },
-    'damage-list':        { icon:'📄', title:'DA Tickets', sub:'View all tickets', color:'blue', roles:['Advisor','Hub Manager','Lead Technician','Service Head','Admin','Super Admin','General Manager','City Ops','Cluster Manager','Team Lead'] },
-    'repair-queue':       { icon:'🔧', title:'Repair Queue', sub:'Assign & work repairs', color:'green', roles:['Lead Technician','Core Technician'] },
-    'running-queue':      { icon:'⚡', title:'Running Repairs', sub:'Quick fixes queue', color:'yellow', roles:['Running Repair Technician'] },
-    'qc-screen':          { icon:'🔍', title:'QC Inspection', sub:'Quality check queue', color:'purple', roles:['QC Technician'] },
-    'iot-screen':         { icon:'📡', title:'IOT Check', sub:'IOT & RFD marking', color:'teal', roles:['IOT Manager'] },
-    'raise-recovery':     { icon:'🚨', title:'Raise Ticket', sub:'Recovery/Impound/FIR', color:'red', roles:['Team Lead','Cluster Manager'] },
-    'recovery-screen':    { icon:'🗂', title:'Recovery Cases', sub:'Manage cases', color:'red', roles:['Recovery Manager','Recovery Associate','Team Lead','Cluster Manager','City Ops','Service Head'] },
-    'insurance-screen':   { icon:'🛡', title:'Insurance', sub:'Claims & approvals', color:'teal', roles:['Insurance Manager','Service Head'] },
-    'inventory-screen':   { icon:'📦', title:'Inventory', sub:'Stock levels & logs', color:'green', roles:['Inventory Manager','Lead Technician','Service Head','Admin','Super Admin'] },
-    'parts-req-screen':   { icon:'🔩', title:'Parts Requests', sub:'Approve/reject requests', color:'orange', roles:['Inventory Manager','Lead Technician'] },
-    'dashboard-screen':   { icon:'📊', title:'Dashboard', sub:'Analytics & reports', color:'blue', roles:['Service Head','City Ops','Cluster Manager','General Manager','Data Analyst','Admin','Super Admin','Hub Manager'] },
+    'damage-form':        { icon:'📋', title:'New Assessment', sub:'Submit vehicle damage', color:'orange',
+                            roles:['Advisor'] },
+    'damage-list':        { icon:'📄', title:'DA Tickets', sub:'View all tickets', color:'blue',
+                            roles:['Advisor','Hub Manager','Lead Technician','Service Head','Admin','Super Admin','General Manager','City Ops','Cluster Manager','Team Lead'] },
+    'repair-queue':       { icon:'🔧', title:'My Repair Jobs', sub:'My assigned tickets', color:'green',
+                            roles:['Lead Technician','Core Technician'] },
+    'repair-monitor':     { icon:'📊', title:'Repair Monitor', sub:'All active repairs & status', color:'orange',
+                            roles:['Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'] },
+    'running-queue':      { icon:'⚡', title:'Running Repairs', sub:'Quick fixes queue', color:'yellow',
+                            roles:['Running Repair Technician'] },
+    'qc-screen':          { icon:'🔍', title:'QC Inspection', sub:'Quality check queue', color:'purple',
+                            roles:['QC Technician'] },
+    'iot-screen':         { icon:'📡', title:'IOT Check', sub:'IOT & RFD marking', color:'teal',
+                            roles:['IOT Manager'] },
+    'raise-recovery':     { icon:'🚨', title:'Raise Recovery', sub:'Recovery/Impound/FIR', color:'red',
+                            roles:['Team Lead','Cluster Manager'] },
+    'recovery-screen':    { icon:'🗂', title:'Recovery Cases', sub:'Manage cases', color:'red',
+                            roles:['Recovery Manager','Recovery Associate','Team Lead','Cluster Manager','City Ops','Service Head'] },
+    'insurance-screen':   { icon:'🛡', title:'Insurance', sub:'Claims & approvals', color:'teal',
+                            roles:['Insurance Manager','Service Head'] },
+    'inventory-screen':   { icon:'📦', title:'Inventory', sub:'Stock levels & logs', color:'green',
+                            roles:['Inventory Manager','Lead Technician','Service Head','Admin','Super Admin'] },
+    'parts-req-screen':   { icon:'🔩', title:'Parts Requests', sub:'Approve/reject requests', color:'orange',
+                            roles:['Inventory Manager'] },
+    'dashboard-screen':   { icon:'📊', title:'Dashboard', sub:'Analytics & reports', color:'blue',
+                            roles:['Service Head','City Ops','Cluster Manager','General Manager','Data Analyst','Admin','Super Admin','Hub Manager'] },
   };
 
   const cards = Object.entries(allCards).filter(([, c]) => {
-    return c.roles.some(cr => r.includes(cr)) || r === 'Super Admin' || r === 'Admin';
+    // EXACT match only — use effectiveRole (Technician → Core Technician)
+    return c.roles.includes(effectiveRole) || effectiveRole === 'Super Admin' || effectiveRole === 'Admin';
   });
 
   document.getElementById('home-cards').innerHTML = cards.map(([screen, c]) =>
@@ -845,6 +930,7 @@ function navTo(screen) {
     case 'damage-form':    showScreen('damage-form'); break;
     case 'damage-list':    showScreen('damage-list'); loadDAList(); break;
     case 'repair-queue':   showScreen('repair-queue'); loadRepairQueue(); break;
+    case 'repair-monitor': showScreen('repair-queue'); loadRepairMonitor(); break;
     case 'running-queue':  showScreen('running-queue'); loadRunningQueue(); break;
     case 'qc-screen':      showScreen('qc-screen'); loadQCQueue(); break;
     case 'iot-screen':     showScreen('iot-screen'); loadIOTQueue(); break;
@@ -870,18 +956,26 @@ async function lookupVehicle() {
   document.getElementById('da-model').textContent = daVehicle.Model || '—';
   document.getElementById('da-oem').textContent = daVehicle.OEM || '—';
   document.getElementById('da-nbfc').textContent = daVehicle.NBFC || '—';
-  document.getElementById('da-hub-disp').textContent = daVehicle.Hub || currentUser.hub;
+  document.getElementById('da-hub-disp').textContent = daVehicle.Hub || '—';
+  // Auto-select advisor's current hub as default submission hub
+  const subHubSel = document.getElementById('da-submission-hub');
+  if (subHubSel) {
+    // Pre-select advisor's own hub
+    subHubSel.value = currentUser.hub || '';
+  }
   document.getElementById('da-vehicle-info').style.display = 'block';
   toast('Vehicle found! ✅','success');
 }
 
 function daStep2() {
   if (!daVehicle) { toast('Lookup vehicle first','error'); return; }
+  const subHub = document.getElementById('da-submission-hub').value;
+  if (!subHub) { toast('Select submission hub','error'); return; }
   if (!document.getElementById('da-rider-id').value.trim()) { toast('Enter Rider ID','error'); return; }
   daSelectedParts = [];
   document.getElementById('da-step1').style.display = 'none';
   document.getElementById('da-step2').style.display = 'block';
-  buildPartsSelector(daVehicle.OEM || 'Ampere', 'da-parts-selector', 'da');
+  buildPartsSelector(normaliseOEM(daVehicle.OEM || 'Ampere'), 'da-parts-selector', 'da');
 }
 
 function daBack() {
@@ -889,13 +983,42 @@ function daBack() {
   document.getElementById('da-step2').style.display = 'none';
 }
 
+// Look up technician name from mobile number using cached data
+function getTechNameFromMobile(mobile) {
+  if (!mobile) return null;
+  // Search all cached hub technician lists
+  for (const hub in techniciansByHub) {
+    const tech = techniciansByHub[hub].find(t => String(t.mobile) === String(mobile));
+    if (tech) return tech.name;
+  }
+  return null;
+}
+
+// Normalise OEM name to match catalog keys
+// Vehicle_Master has 'MotoVolt', catalog has 'Motovolt', etc.
+function normaliseOEM(oem) {
+  if (!oem) return 'Ampere';
+  const map = {
+    'motovolt': 'Motovolt',
+    'ampere':   'Ampere',
+    'shema':    'Shema',
+    'bgauss':   'Ampere',   // Bgauss → use Ampere catalog until Bgauss parts added
+    'warivo':   'Ampere',   // Warivo → use Ampere catalog until Warivo parts added
+  };
+  return map[oem.toLowerCase()] || oem;
+}
+
 function buildPartsSelector(oem, containerId, prefix) {
+  const rawOEM = oem;
+  oem = normaliseOEM(oem);
   const catalog = PARTS_CATALOG[oem] || PARTS_CATALOG['Ampere'];
+  const noCatalog = !PARTS_CATALOG[oem];
   const categories = Object.keys(catalog);
   const el = document.getElementById(containerId);
   if (!el) return;
 
   el.innerHTML = `
+    ${noCatalog ? `<div style="background:rgba(245,158,11,.15);border:1px solid var(--warning);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--warning);margin-bottom:8px">⚠ No catalog for ${rawOEM} yet — showing Ampere parts as reference. Add ${rawOEM} parts to Parts_Catalog sheet.</div>` : ''}
     <div class="cat-tabs" id="${prefix}-cat-tabs">
       ${categories.map((cat,i) => `<div class="cat-tab ${i===0?'active':''}" onclick="switchCat('${oem}','${cat}','${prefix}',this)">${cat.replace(' Spare Parts','').replace('Electrical','Elec').replace('Consumables','Consumable')}</div>`).join('')}
     </div>
@@ -931,7 +1054,7 @@ function showCategoryParts(oem, cat, prefix) {
   }).join('');
 }
 
-function escH(s) { return (s||'').replace(/'/g,"\'").replace(/"/g,'&quot;'); }
+function escH(s) { return (s||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;'); }
 
 function togglePart(id, code, name, cat, oem, prefix) {
   const idx = daSelectedParts.findIndex(s => s.partId === id);
@@ -1023,7 +1146,7 @@ async function submitDA() {
   if (daSelectedParts.length === 0) { toast('Select at least one damaged part','error'); return; }
 
   const payload = {
-    hub: daVehicle.Hub || currentUser.hub,
+    hub: document.getElementById('da-submission-hub').value || daVehicle.Hub || currentUser.hub,
     advisorMobile: currentUser.mobile,
     advisorName: currentUser.name,
     caseType: document.getElementById('da-case-type').value,
@@ -1058,6 +1181,7 @@ async function submitDA() {
   document.getElementById('da-step1').style.display = 'block';
   document.getElementById('da-step2').style.display = 'none';
   document.getElementById('da-rider-id').value = '';
+  const sh = document.getElementById('da-submission-hub'); if(sh) sh.value = '';
   goHome();
 }
 
@@ -1065,7 +1189,18 @@ async function submitDA() {
 // DA TICKET LIST
 // ═══════════════════════════════════════════════════════════
 async function loadDAList() {
-  const hub = ['Super Admin','Admin','Service Head','City Ops','General Manager','IOT Manager'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  const ALL_HUB_ROLES = ['Super Admin','Admin','Service Head','City Ops','General Manager','IOT Manager','Insurance Manager','Recovery Manager','Data Analyst'];
+  const ASSIGNED_HUB_ROLES = ['Cluster Manager','Team Lead'];
+  const r = currentUser.role;
+  let hub;
+  if (ALL_HUB_ROLES.includes(r)) {
+    hub = 'ALL';
+  } else if (ASSIGNED_HUB_ROLES.includes(r)) {
+    // Send comma-separated assigned hubs — backend filters on each
+    hub = (currentUser.assignedHubs || [currentUser.hub]).join(',');
+  } else {
+    hub = currentUser.hub;
+  }
   const res = await api('getDamageTickets', { hub });
   allDaTickets = res.tickets || [];
   renderDAList();
@@ -1079,30 +1214,103 @@ function renderDAList() {
 
   document.getElementById('da-list-content').innerHTML = tickets.length === 0
     ? '<p style="text-align:center;color:var(--text2);padding:40px">No tickets found</p>'
-    : tickets.map(t => `
-      <div class="ticket-card" onclick="viewDATicket('${t.Ticket_ID}')">
-        <div class="ticket-header">
+    : tickets.map(t => {
+      const assignRoleMatch = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops']
+        .includes(currentUser.role); // EXACT match only — technicians cannot reassign
+      const showAssign   = assignRoleMatch && t.Status === 'Open';
+      const showReassign = assignRoleMatch && ['Assigned','In Repair'].includes(t.Status);
+      return `
+      <div class="ticket-card">
+        <div class="ticket-header" onclick="viewDATicket('${t.Ticket_ID}')">
           <span class="ticket-id">${t.Ticket_ID}</span>
           <span class="status-badge ${statusClass(t.Status)}">${t.Status}</span>
         </div>
-        <div class="ticket-meta">
+        <div class="ticket-meta" onclick="viewDATicket('${t.Ticket_ID}')">
           <span class="tag tag-blue">${t.OEM}</span>
           <span class="tag tag-orange">${t.Case_Type}</span>
           <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
           ${t.Insurance_Required==='Yes'?'<span class="tag tag-teal">🛡 Insurance</span>':''}
         </div>
-        <div class="ticket-title">${t.Chassis_No}</div>
-        <div class="ticket-sub">Rider: ${t.Rider_ID} · Hub: ${t.Hub} · ₹${Number(t.Damage_Amount||0).toLocaleString('en-IN')}</div>
-        <div class="ticket-sub" style="margin-top:4px">${fmtDate(t.Submitted_At)}</div>
-      </div>`
-    ).join('');
+        <div class="ticket-title" onclick="viewDATicket('${t.Ticket_ID}')">${t.Chassis_No}</div>
+        <div class="ticket-sub" onclick="viewDATicket('${t.Ticket_ID}')">Rider: ${t.Rider_ID} · Hub: ${t.Hub} · ₹${Number(t.Damage_Amount||0).toLocaleString('en-IN')}</div>
+        <div class="ticket-sub" style="margin-top:4px" onclick="viewDATicket('${t.Ticket_ID}')">${fmtDate(t.Submitted_At)}</div>
+        ${(showAssign || showReassign) ? `
+        <div style="margin-top:10px">
+          ${showReassign && t.Assigned_To ? `<div style="font-size:11px;color:var(--warning);margin-bottom:6px">⚠ Currently: ${t.Assigned_Tech_Name||t.Assigned_To}</div>` : ''}
+          <div style="display:flex;gap:8px;align-items:center">
+            <select id="tech-sel-${t.Ticket_ID}"
+              style="flex:1;background:var(--surface3);border:1.5px solid ${showReassign ? 'var(--warning)' : 'var(--border)'};border-radius:8px;padding:9px 10px;color:var(--text);font-size:12px;outline:none"
+              onfocus="buildTechDropdown('${t.Ticket_ID}','${t.Hub}')">
+              <option value="">👆 ${showReassign ? 'Tap to reassign' : 'Tap to load technicians'}</option>
+            </select>
+            <button id="assign-btn-${t.Ticket_ID}" class="btn ${showReassign ? 'btn-warning' : 'btn-primary'} btn-sm"
+              onclick="quickAssign('${t.Ticket_ID}','${t.Chassis_No}','${t.Hub}',${showReassign})">
+              ${showReassign ? '🔄' : 'Assign'}
+            </button>
+          </div>
+        </div>` : ''}
+      </div>`;
+    }).join('');
 }
 
 function filterDA() { renderDAList(); }
+
+// Load technicians for a hub — cached so only 1 API call per hub per session
+async function getTechsForHub(hub) {
+  if (techniciansByHub[hub]) return techniciansByHub[hub];
+  const res = await api('getTechnicians', { hub });
+  if (res.error || !res.technicians) return [];
+  techniciansByHub[hub] = res.technicians;
+  return res.technicians;
+}
+
+// Build technician dropdown for a ticket's hub
+async function buildTechDropdown(ticketId, hub) {
+  const sel = document.getElementById('tech-sel-' + ticketId);
+  if (!sel) return;
+  // Clear cache for this hub so fresh data loads every time dropdown is opened
+  delete techniciansByHub[hub];
+  sel.innerHTML = '<option value="">⏳ Loading...</option>';
+  const techs = await getTechsForHub(hub);
+  if (techs.length === 0) {
+    sel.innerHTML = '<option value="">No technicians found for ' + hub + '</option>';
+    return;
+  }
+  // Filter to repair-capable roles only
+  // Match any role containing 'technician' (case-insensitive) or Hub Manager
+  const filtered = techs.filter(t => 
+    (t.role||'').toLowerCase().includes('technician') || t.role === 'Hub Manager'
+  );
+  sel.innerHTML = '<option value="">— Select Technician —</option>' +
+    filtered.map(t => `<option value="${t.mobile}|${t.name}|${t.role}">${t.name} · ${t.role}</option>`).join('');
+}
+
+async function quickAssign(ticketId, chassisNo, ticketHub, isReassign=false) {
+  const sel = document.getElementById('tech-sel-' + ticketId);
+  if (!sel || !sel.value) { toast('Select a technician first','error'); return; }
+  const [techMobile, techName] = sel.value.split('|');
+  const btn = document.getElementById('assign-btn-' + ticketId);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  const res = await api('assignRepair', {
+    ticketId, chassisNo,
+    hub: ticketHub || currentUser.hub,
+    leadMobile: currentUser.mobile,
+    leadName: currentUser.name,
+    techMobile, techName,
+    isReassign, reassignReason: isReassign ? 'Reassigned from ticket list' : '',
+  });
+  if (btn) { btn.textContent = isReassign ? '🔄' : 'Assign'; btn.disabled = false; }
+  if (res.error) { toast(res.error,'error'); return; }
+  toast((isReassign ? '🔄 Reassigned to ' : '✅ Assigned to ') + techName, 'success');
+  loadDAList();
+}
 function filterDAStatus(status, el) {
   daStatusFilter = status;
-  document.querySelectorAll('#da-status-tabs .tab').forEach(t => t.classList.remove('active'));
-  el.classList.add('active');
+  // Works with both .tab and .cat-tab
+  if (el && el.parentElement) {
+    el.parentElement.querySelectorAll('.tab,.cat-tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+  }
   renderDAList();
 }
 
@@ -1113,20 +1321,46 @@ async function viewDATicket(ticketId) {
   if (res.error) { toast(res.error,'error'); return; }
   const t = res.ticket, parts = res.parts || [];
 
-  // For lead tech — show assign option
-  const isLead = currentUser.role === 'Lead Technician';
-  const assignSection = isLead ? `
-    <div class="detail-section">
-      <h3>Assign to Technician</h3>
+  const r = currentUser.role;
+  const CAN_ASSIGN_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
+  const roleCanAssign = CAN_ASSIGN_ROLES.includes(r); // EXACT — technicians cannot assign/reassign
+
+  // ASSIGN — ticket is Open or Insurance Approved
+  const canAssign = roleCanAssign && ['Open','Insurance Approved'].includes(t.Status);
+
+  // REASSIGN — ticket is Assigned or In Repair (can change technician)
+  const canReassign = roleCanAssign && ['Assigned','In Repair'].includes(t.Status);
+
+  const currentTechRow = (t.Assigned_To || t.Assigned_To_Mobile)
+    ? `<div class="detail-row" style="margin-bottom:10px">
+        <span style="color:var(--text2)">Currently Assigned To</span>
+        <span style="color:var(--warning);font-weight:700">${t.Assigned_Tech_Name || t.Assigned_To || '—'}</span>
+       </div>` : '';
+
+  const assignSection = (canAssign || canReassign) ? `
+    <div class="detail-section" style="border-color:${canReassign ? 'var(--warning)' : 'var(--primary)'}">
+      <h3 style="color:${canReassign ? 'var(--warning)' : 'var(--primary)'}">
+        ${canReassign ? '🔄 Reassign Technician' : '🔧 Assign to Technician'}
+      </h3>
+      ${canReassign ? currentTechRow : ''}
       <div class="field-group">
-        <label>Technician Mobile</label>
-        <input type="tel" id="assign-tech-mobile" placeholder="Technician mobile number">
+        <label>Select Technician <span style="color:var(--text3);font-size:11px">(${t.Hub} hub only)</span></label>
+        <select id="assign-tech-sel"
+          style="width:100%;background:var(--surface3);border:1.5px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px"
+          onfocus="loadDetailTechs('${t.Hub}')">
+          <option value="">👆 Tap to load technicians</option>
+        </select>
       </div>
+      ${canReassign ? `
       <div class="field-group">
-        <label>Technician Name</label>
-        <input type="text" id="assign-tech-name" placeholder="Technician name">
-      </div>
-      <button class="btn btn-primary" onclick="assignTicket('${ticketId}','${t.Chassis_No}')">🔧 Assign Repair</button>
+        <label>Reason for Reassignment</label>
+        <input type="text" id="reassign-reason" placeholder="e.g. Technician on leave, better skill match..."
+          style="width:100%;background:var(--surface3);border:1.5px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px">
+      </div>` : ''}
+      <button class="btn ${canReassign ? 'btn-warning' : 'btn-primary'}"
+        onclick="assignTicketFromDetail('${ticketId}','${t.Chassis_No}','${t.Hub}',${canReassign})">
+        ${canReassign ? '🔄 Confirm Reassignment' : '🔧 Assign Repair'}
+      </button>
     </div>` : '';
 
   document.getElementById('da-list-content').innerHTML = `
@@ -1165,113 +1399,463 @@ async function viewDATicket(ticketId) {
   `;
 }
 
-async function assignTicket(ticketId, chassisNo) {
-  const techMobile = document.getElementById('assign-tech-mobile').value.trim();
-  const techName   = document.getElementById('assign-tech-name').value.trim();
-  if (!techMobile || !techName) { toast('Enter technician details','error'); return; }
+async function loadDetailTechs(hub) {
+  const sel = document.getElementById('assign-tech-sel');
+  if (!sel || sel.dataset.loaded === hub) return;
+  sel.innerHTML = '<option value="">⏳ Loading...</option>';
+  const techs = await getTechsForHub(hub);
+  const filtered = techs.filter(t => 
+    (t.role||'').toLowerCase().includes('technician') || t.role === 'Hub Manager'
+  );
+  sel.innerHTML = '<option value="">— Select Technician —</option>' +
+    filtered.map(t => `<option value="${t.mobile}|${t.name}">${t.name} · ${t.role}</option>`).join('');
+  sel.dataset.loaded = hub;
+}
+
+async function assignTicketFromDetail(ticketId, chassisNo, hub, isReassign=false) {
+  const sel = document.getElementById('assign-tech-sel');
+  if (!sel || !sel.value) { toast('Select a technician first','error'); return; }
+  const [techMobile, techName] = sel.value.split('|');
+  if (isReassign) {
+    const reason = (document.getElementById('reassign-reason')||{}).value || 'Reassigned';
+    if (!reason.trim()) { toast('Enter reason for reassignment','error'); return; }
+  }
+  const reason = isReassign ? ((document.getElementById('reassign-reason')||{}).value || 'Reassigned') : '';
   const res = await api('assignRepair', {
-    ticketId, chassisNo, hub: currentUser.hub,
+    ticketId, chassisNo, hub,
     leadMobile: currentUser.mobile, leadName: currentUser.name,
     techMobile, techName,
+    isReassign, reassignReason: reason,
   });
   if (res.error) { toast(res.error,'error'); return; }
-  toast('Assigned successfully ✅','success');
+  toast((isReassign ? '🔄 Reassigned to ' : '✅ Assigned to ') + techName, 'success');
   loadDAList();
+}
+
+async function assignTicket(ticketId, chassisNo) {
+  // Legacy fallback — not used but kept for safety
+  toast('Use the dropdown to select technician','error');
 }
 
 // ═══════════════════════════════════════════════════════════
 // REPAIR QUEUE & WORK
 // ═══════════════════════════════════════════════════════════
-async function loadRepairQueue() {
-  const res = await api('getMyRepairs', { mobile: currentUser.mobile });
-  const tickets = res.tickets || [];
-  document.getElementById('repair-queue-content').innerHTML = tickets.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No repairs assigned to you</p>'
-    : tickets.map(t => `
-      <div class="ticket-card" onclick="openRepairWork('${t.Ticket_ID}')">
-        <div class="ticket-header">
-          <span class="ticket-id">${t.Ticket_ID}</span>
-          <span class="status-badge ${statusClass(t.Status)}">${t.Status}</span>
-        </div>
-        <div class="ticket-meta">
-          <span class="tag tag-blue">${t.OEM}</span>
-          <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
-        </div>
-        <div class="ticket-title">${t.Chassis_No}</div>
-        <div class="ticket-sub">Rider: ${t.Rider_ID} · ₹${Number(t.Damage_Amount||0).toLocaleString('en-IN')}</div>
-      </div>`
-    ).join('');
+async function loadRepairMonitor() {
+  // Managers see ALL active repairs across hub with full status
+  showScreen('repair-queue');
+  document.getElementById('repair-queue-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div><span>Loading all repairs...</span></div>';
+  const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role)
+    ? 'ALL' : currentUser.hub;
+  const res = await api('getDamageTickets', { hub });
+  if (res.error) {
+    document.getElementById('repair-queue-content').innerHTML =
+      `<div style="padding:20px;text-align:center">
+        <div style="color:var(--danger);margin-bottom:12px">❌ ${res.error}</div>
+        <button class="btn btn-primary btn-sm" onclick="loadRepairMonitor()">🔄 Retry</button>
+      </div>`;
+    return;
+  }
+  const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
+  const tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
+
+  const statusColor = {
+    'Assigned':        { bg:'rgba(79,142,247,.15)', border:'var(--primary)',  label:'🔵 Assigned' },
+    'Parts Requested': { bg:'rgba(245,158,11,.15)', border:'var(--warning)',  label:'🟡 Parts Requested' },
+    'Parts Approved':  { bg:'rgba(34,197,94,.15)',  border:'var(--success)',  label:'🟢 Parts Approved' },
+    'In Repair':       { bg:'rgba(249,115,22,.15)', border:'var(--orange)',   label:'🔧 In Repair' },
+  };
+
+  document.getElementById('repair-queue-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:13px;color:var(--text2)">${tickets.length} active repair tickets · ${hub === 'ALL' ? 'All Hubs' : hub}</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadRepairMonitor()">🔄 Refresh</button>
+    </div>
+    ${Object.entries(statusColor).map(([status, style]) => {
+      const group = tickets.filter(t => t.Status === status);
+      if (group.length === 0) return '';
+      return `
+        <div style="margin-bottom:16px">
+          <div style="font-size:12px;font-weight:700;color:var(--text2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">
+            ${style.label} (${group.length})
+          </div>
+          ${group.map(t => `
+            <div class="ticket-card" style="border-color:${style.border};background:${style.bg};margin-bottom:8px" onclick="openRepairWork('${t.Ticket_ID}')">
+              <div class="ticket-header">
+                <span class="ticket-id">${t.Ticket_ID}</span>
+                <span style="font-size:11px;color:var(--text2)">${t.Hub}</span>
+              </div>
+              <div class="ticket-title">${t.Chassis_No} · ${t.OEM}</div>
+              <div class="ticket-sub">Tech: ${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'} · Rider: ${t.Rider_ID}</div>
+              <div class="ticket-sub" style="margin-top:3px;color:var(--text3)">Assigned: ${fmtDate(t.Assigned_At)}</div>
+            </div>`).join('')}
+        </div>`;
+    }).join('')}
+    ${tickets.length === 0 ? '<p style="text-align:center;color:var(--text2);padding:40px">No active repairs right now ✅</p>' : ''}
+  `;
 }
 
-async function openRepairWork(ticketId) {
-  const res = await api('getDamageDetail', { ticketId });
-  if (res.error) { toast(res.error,'error'); return; }
-  currentRepairTicket = res;
-  const t = res.ticket, parts = res.parts || [];
-  const oem = t.OEM || 'Ampere';
+// DEBUG: tap ticket ID 3 times fast to show raw API response
+let _debugTaps = 0, _debugTimer = null;
+function debugTap(ticketId) {
+  _debugTaps++;
+  clearTimeout(_debugTimer);
+  _debugTimer = setTimeout(() => { _debugTaps = 0; }, 2000);
+  if (_debugTaps >= 3) {
+    _debugTaps = 0;
+    showRawDebug(ticketId);
+  } else {
+    openRepairWork(ticketId);
+  }
+}
 
+async function showRawDebug(ticketId) {
+  const el = document.getElementById('repair-work-content');
   showScreen('repair-work');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><span>Debug test...</span></div>';
+  const start = Date.now();
+  const res = await api('getDamageDetail', { ticketId });
+  const ms = Date.now() - start;
+  el.innerHTML = '<div style="padding:16px;font-size:11px;word-break:break-all;background:var(--surface2);border-radius:8px;margin:8px">'
+    + '<b>ticketId:</b> ' + ticketId + '<br>'
+    + '<b>time:</b> ' + ms + 'ms<br>'
+    + '<b>response:</b><br><pre style="font-size:10px;overflow:auto;max-height:400px">'
+    + JSON.stringify(res, null, 2) + '</pre>'
+    + '<button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="showScreen('repair-queue')">← Back</button>'
+    + '</div>';
+}
 
-  // Reset repair parts selection
+async function loadRepairQueue() {
+  document.getElementById('repair-queue-content').innerHTML =
+    '<div class="loading"><div class="spinner"></div><span>Loading repairs...</span></div>';
+
+  const TECH_ONLY_ROLES = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
+  const LEAD_MANAGER_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
+  const isTechOnly = TECH_ONLY_ROLES.includes(currentUser.role);
+  const isLeadManager = LEAD_MANAGER_ROLES.some(r => currentUser.role === r);
+
+  let res;
+  if (isTechOnly) {
+    // Plain technician — ONLY their own assigned tickets, nothing else
+    res = await api('getMyRepairs', { mobile: currentUser.mobile });
+  } else if (isLeadManager) {
+    // Lead/managers see all active repairs across their hub
+    const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+    res = await api('getDamageTickets', { hub });
+    const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
+    res.tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
+  } else {
+    res = await api('getMyRepairs', { mobile: currentUser.mobile });
+  }
+
+  if (res.error) {
+    document.getElementById('repair-queue-content').innerHTML =
+      `<div style="padding:20px;text-align:center">
+        <div style="color:var(--danger);margin-bottom:12px">❌ ${res.error}</div>
+        <button class="btn btn-primary btn-sm" onclick="loadRepairQueue()">🔄 Retry</button>
+      </div>`;
+    return;
+  }
+  const tickets = res.tickets || [];
+  document.getElementById('repair-queue-content').innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:12px;color:var(--text2)">${isTechOnly ? 'Your assigned tickets' : 'All active repairs'} · ${tickets.length}</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadRepairQueue()">🔄</button>
+    </div>` +
+    (tickets.length === 0
+      ? '<p style="text-align:center;color:var(--text2);padding:40px">No active repair tickets</p>'
+      : tickets.map(t => {
+          const statusColors = {
+            'Assigned':              'tag-blue',
+            'Parts Requested':       'tag-yellow',
+            'Parts Approved':        'tag-green',
+            'In Repair':             'tag-orange',
+          };
+          const sc = statusColors[t.Status] || 'tag-grey';
+          return `
+          <div class="ticket-card" onclick="debugTap('${t.Ticket_ID}')">
+            <div class="ticket-header">
+              <span class="ticket-id">${t.Ticket_ID}</span>
+              <span class="tag ${sc}" style="font-size:11px;padding:3px 10px">${t.Status}</span>
+            </div>
+            <div class="ticket-meta">
+              <span class="tag tag-blue">${t.OEM}</span>
+              <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
+              <span class="tag tag-grey">${t.Hub}</span>
+            </div>
+            <div class="ticket-title">${t.Chassis_No}</div>
+            <div class="ticket-sub">Assigned To: ${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'} · Rider: ${t.Rider_ID}</div>
+            <div class="ticket-sub" style="margin-top:2px">${fmtDate(t.Assigned_At)}</div>
+          </div>`;
+        }).join(''));
+}
+
+// ═══════════════════════════════════════════════════════════
+// REPAIR WORKFLOW — FULL NEW FLOW
+// Assigned → Raise Part Request → Approved → Start Repair → Complete → QC
+// ═══════════════════════════════════════════════════════════
+
+async function openRepairWork(ticketId) {
+  showScreen('repair-work');
+  const el = document.getElementById('repair-work-content');
+  let secs = 0;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><span id="rw-load-txt">Loading... 0s</span></div>';
+  const loadTimer = setInterval(() => { secs++; const t=document.getElementById('rw-load-txt'); if(t) t.textContent='Loading... '+secs+'s'; }, 1000);
+
+  const showErr = (msg) => {
+    clearInterval(loadTimer);
+    el.innerHTML = `<div style="padding:24px;text-align:center">
+      <div style="font-size:32px;margin-bottom:12px">⚠️</div>
+      <div style="color:var(--danger);font-size:13px;margin-bottom:16px;word-break:break-all">${msg}</div>
+      <button class="btn btn-primary btn-sm" onclick="openRepairWork('${ticketId}')">🔄 Retry</button>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px;display:block;width:100%" onclick="showScreen('repair-queue');loadRepairQueue()">← Back</button>
+    </div>`;
+  };
+
+  // Step 1: getDamageDetail
+  const t1 = Date.now();
+  let detailRes;
+  try {
+    detailRes = await api('getDamageDetail', { ticketId });
+  } catch(e) {
+    showErr('getDamageDetail threw: ' + e.message);
+    return;
+  }
+  const t1ms = Date.now() - t1;
+
+  if (!detailRes) { showErr('getDamageDetail returned null (took ' + t1ms + 'ms)'); return; }
+  if (detailRes.error) { showErr('getDamageDetail error (' + t1ms + 'ms): ' + detailRes.error); return; }
+  if (!detailRes.ticket) { showErr('getDamageDetail: no ticket in response. Keys: ' + Object.keys(detailRes).join(',')); return; }
+
+  // Step 2 & 3: non-critical, don't block
+  let prRes = { requests: [] };
+  let evRes = { events: [] };
+  try { const r = await api('getPartsRequests', { ticketId }); if (r && !r.error) prRes = r; } catch(e) {}
+  try { const r = await api('getRepairEvents',  { ticketId }); if (r && !r.error) evRes = r; } catch(e) {}
+
+  clearInterval(loadTimer);
+  // Safety: if events sheet doesn't exist yet, treat as empty
+  currentRepairTicket = detailRes;
   daSelectedParts = [];
+
+  const t      = detailRes.ticket;
+  const parts  = detailRes.parts || [];
+  const preqs  = (prRes && prRes.requests) ? prRes.requests : [];
+  const events = (evRes && evRes.events) ? evRes.events : [];
+  const oem    = normaliseOEM(t.OEM || 'Ampere');
+  const TECH_ONLY = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
+  const isTech = TECH_ONLY.includes(currentUser.role);
+  const isViewer = !isTech; // admin/lead/service head viewing
+
+  // ── STATUS TIMELINE ─────────────────────────────────────
+  const statusSteps = ['Assigned','Parts Requested','Parts Approved','In Repair','QC Pending','RFD'];
+  // Map edge-case statuses to timeline steps
+  const statusMap = {
+    'Parts Requested': 'Parts Requested',
+    'Parts Approved':  'Parts Approved',
+    'Parts Partially Approved': 'Parts Requested',
+    'Insurance Approved': 'Assigned',
+    'QC Failed - Rework': 'In Repair',
+    'IOT Issue - Hold': 'QC Pending',
+  };
+  const mappedStatus = statusMap[t.Status] || t.Status;
+  const curIdx = statusSteps.indexOf(mappedStatus);
+  const timelineHtml = `
+    <div style="display:flex;align-items:center;gap:0;margin-bottom:16px;overflow-x:auto;padding-bottom:4px">
+      ${statusSteps.map((s,i) => `
+        <div style="display:flex;align-items:center;flex-shrink:0">
+          <div style="text-align:center;min-width:72px">
+            <div style="width:28px;height:28px;border-radius:50%;margin:0 auto 4px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;
+              background:${i<curIdx?'var(--success)':i===curIdx?'var(--primary)':'var(--surface3)'};
+              color:${i<=curIdx?'#fff':'var(--text3)'}">
+              ${i<curIdx?'✓':i+1}
+            </div>
+            <div style="font-size:9px;color:${i===curIdx?'var(--primary)':i<curIdx?'var(--success)':'var(--text3)'};font-weight:${i===curIdx?'700':'400'};line-height:1.2">${s}</div>
+          </div>
+          ${i<statusSteps.length-1?`<div style="height:2px;width:16px;flex-shrink:0;background:${i<curIdx?'var(--success)':'var(--border)'}"></div>`:''}
+        </div>`).join('')}
+    </div>`;
+
+  // ── TIMESTAMPS from events ───────────────────────────────
+  const evMap = {};
+  events.forEach(e => { evMap[e.Event_Type] = e.Timestamp; });
+  const tsHtml = `
+    <div class="detail-section">
+      <h3>⏱ Timeline</h3>
+      ${[
+        ['Assigned',       evMap['REPAIR_ASSIGNED']   || t.Assigned_At],
+        ['Parts Requested',evMap['PARTS_REQ_RAISED']],
+        ['Parts Approved', evMap['PARTS_REQUEST_APPROVED'] || evMap['PARTS_REQ_APPROVED']],
+        ['Repair Started', evMap['REPAIR_STARTED']],
+        ['Repair Complete',evMap['REPAIR_COMPLETE']],
+        ['QC Passed',      evMap['QC_PASS']],
+        ['RFD Marked',     evMap['IOT_RFD_MARKED']],
+      ].map(([label,ts]) => ts ? `<div class="detail-row"><span>${label}</span><span style="color:var(--success);font-size:12px">${fmtDate(ts)}</span></div>` : '').join('')}
+    </div>`;
+
+  // ── PARTS REQUESTS STATUS ───────────────────────────────
+  const prHtml = preqs.length > 0 ? `
+    <div class="detail-section">
+      <h3>📦 Parts Requests</h3>
+      ${preqs.map(pr => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <div style="font-size:13px;font-weight:600">${pr.Part_Name}</div>
+            <div style="font-size:11px;color:var(--text3)">${pr.Part_ID} · Qty: ${pr.Qty_Requested}</div>
+            <div style="font-size:11px;color:var(--text3)">${fmtDate(pr.Raised_At)}</div>
+          </div>
+          <div>
+            <span class="status-badge ${pr.Status==='Approved'?'s-rfd':pr.Status==='Rejected'?'s-closed':'s-open'}">${pr.Status}</span>
+            ${pr.Status==='Approved'?`<div style="font-size:10px;color:var(--success);margin-top:2px">${fmtDate(pr.Approved_At)}</div>`:''}
+            ${pr.Status==='Rejected'?`<div style="font-size:10px;color:var(--danger);margin-top:2px">${pr.Remarks||''}</div>`:''}
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  // ── TECH: RAISE PART REQUEST (only when Assigned / Parts Rejected) ──
+  // Tech can raise request when: just assigned, or some parts rejected, or re-requesting
+  const hasRejected = preqs.some(pr => pr.Status === 'Rejected');
+  const canRaiseRequest = isTech && (t.Status === 'Assigned' || hasRejected);
+  const isWaiting = isTech && t.Status === 'Parts Requested' && !hasRejected;
+  const raiseReqHtml = canRaiseRequest ? `
+    <div class="detail-section" style="border-color:var(--primary)">
+      <h3 style="color:var(--primary)">📦 Raise Parts Request</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Select parts needed. Inventory Manager will approve.</p>
+      <div class="parts-selector" id="repair-parts-selector"></div>
+      <div id="repair-selected-chips" class="selected-parts" style="margin-top:8px"></div>
+      <div class="field-group" style="margin-top:10px">
+        <label>Remarks (mention any part not in stock)</label>
+        <textarea id="pr-remarks" placeholder="e.g. ABS Handle Bar not in stock at hub..."></textarea>
+      </div>
+      <button class="btn btn-primary" id="raise-pr-btn" onclick="submitPartsRequest('${ticketId}','${t.Chassis_No}','${oem}')">
+        📤 Submit Parts Request
+      </button>
+    </div>` : '';
+
+  // ── TECH: START REPAIR (only when Parts Approved) ──────
+  const canStart = isTech && t.Status === 'Parts Approved';
+  const startHtml = canStart ? `
+    <div class="detail-section" style="border-color:var(--success)">
+      <h3 style="color:var(--success)">✅ Parts Approved — Ready to Repair</h3>
+      <p style="font-size:12px;color:var(--text2);margin-bottom:12px">All parts approved. Click Start Repair to begin.</p>
+      <button class="btn btn-success" onclick="doStartRepair('${ticketId}','${t.Chassis_No}')">▶ Start Repair</button>
+    </div>` : '';
+
+  // ── TECH: COMPLETE REPAIR (only when In Repair) ────────
+  const canComplete = isTech && t.Status === 'In Repair';
+  const completeHtml = canComplete ? `
+    <div class="detail-section" style="border-color:var(--success)">
+      <h3>🔧 Work in Progress</h3>
+      <div class="field-group">
+        <label>Repair Remarks</label>
+        <textarea id="repair-remarks" placeholder="What was done, any observations..."></textarea>
+      </div>
+      <button class="btn btn-success" onclick="doCompleteRepair('${ticketId}','${t.Chassis_No}')">✅ Mark Complete → Send to QC</button>
+    </div>` : '';
+
+  // ── VIEWER: BOTTLENECK ALERT ───────────────────────────
+  const bottleneckHtml = isViewer ? (() => {
+    const pendingParts = preqs.filter(p => p.Status === 'Pending');
+    if (pendingParts.length > 0 && t.Status !== 'In Repair') {
+      return `<div style="background:rgba(245,158,11,.15);border:1px solid var(--warning);border-radius:var(--radius);padding:12px;margin-bottom:12px">
+        <div style="font-weight:700;color:var(--warning);margin-bottom:6px">⚠ Bottleneck: ${pendingParts.length} parts request(s) pending approval</div>
+        ${pendingParts.map(p=>`<div style="font-size:12px;color:var(--text2)">• ${p.Part_Name} ×${p.Qty_Requested} — waiting since ${fmtDate(p.Raised_At)}</div>`).join('')}
+      </div>`;
+    }
+    return '';
+  })() : '';
 
   document.getElementById('repair-work-content').innerHTML = `
     <div class="detail-section">
       <h3>Job Card — ${t.Ticket_ID}</h3>
       <div class="detail-row"><span>Chassis</span><span>${t.Chassis_No}</span></div>
       <div class="detail-row"><span>OEM</span><span>${t.OEM}</span></div>
-      <div class="detail-row"><span>Status</span><span>${t.Status}</span></div>
+      <div class="detail-row"><span>Hub</span><span>${t.Hub}</span></div>
+      <div class="detail-row"><span>Category</span><span style="color:var(--orange);font-weight:700">${t.Damage_Category||'—'}</span></div>
+      <div class="detail-row"><span>Status</span><span class="status-badge ${statusClass(t.Status)}">${t.Status}</span></div>
+      <div class="detail-row"><span>Assigned To</span><span>${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'}</span></div>
     </div>
+    ${timelineHtml}
+    ${bottleneckHtml}
     <div class="detail-section">
-      <h3>Assessed Damage Parts</h3>
-      ${parts.map(p => `<div class="detail-row"><span>${p.Part_Name}</span><span>×${p.Qty}</span></div>`).join('')}
+      <h3>Damaged Parts (${parts.length})</h3>
+      ${parts.map(p=>`<div class="detail-row"><span>${p.Part_Name}</span><span style="font-size:12px">${p.Category} ×${p.Qty}</span></div>`).join('')}
     </div>
-    <div class="section-hdr">Log Parts Used for Repair</div>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:12px">Select parts you actually used. These will be deducted from inventory.</p>
-    <div class="parts-selector" id="repair-parts-selector"></div>
-    <div id="repair-selected-chips" class="selected-parts"></div>
-    <div class="field-group" style="margin-top:12px">
-      <label>Repair Remarks</label>
-      <textarea id="repair-remarks" placeholder="What was done..."></textarea>
-    </div>
-    <button class="btn btn-warning" onclick="logRepairParts('${ticketId}','${t.Chassis_No}','${oem}')" style="margin-bottom:8px">➕ Log Parts Used</button>
-    <button class="btn btn-success" onclick="completeRepair('${ticketId}','${t.Chassis_No}')">✅ Mark Repair Complete → QC</button>
-
-    <div class="divider"></div>
-    <div class="section-hdr">Start Repair Timer</div>
-    <button class="btn btn-primary btn-sm" onclick="startRepairTimer('${ticketId}','${t.Chassis_No}')">▶ Start Repair</button>
+    ${prHtml}
+    ${tsHtml}
+    ${waitingHtml||''}
+    ${waitingHtml2||''}
+    ${raiseReqHtml}
+    ${startHtml}
+    ${completeHtml}
   `;
-  buildPartsSelector(oem, 'repair-parts-selector', 'repair');
-}
 
-async function startRepairTimer(ticketId, chassisNo) {
-  const res = await api('startRepair', { ticketId, chassisNo, hub: currentUser.hub, techMobile: currentUser.mobile, techName: currentUser.name });
-  if (res.success) toast('Repair started ⏱','success');
-}
-
-async function logRepairParts(ticketId, chassisNo, oem) {
-  if (daSelectedParts.length === 0) { toast('Select parts first','error'); return; }
-  for (const p of daSelectedParts) {
-    await api('addRepairPart', {
-      ticketId, chassisNo, hub: currentUser.hub,
-      techMobile: currentUser.mobile, techName: currentUser.name,
-      partId: p.partId, partCode: p.partCode, partName: p.partName,
-      category: p.category, qty: p.qty, unitPrice: p.unitPrice||0,
-      remarks: document.getElementById('repair-remarks')?.value || '',
-    });
+  // Build parts selector only if raising request
+  if (canRaiseRequest) {
+    buildPartsSelector(oem, 'repair-parts-selector', 'repair');
   }
-  toast(daSelectedParts.length + ' parts logged ✅','success');
-  daSelectedParts = [];
-  updateSelectedChips('repair');
 }
 
-async function completeRepair(ticketId, chassisNo) {
-  const remarks = document.getElementById('repair-remarks')?.value || '';
-  const res = await api('completeRepair', { ticketId, chassisNo, hub: currentUser.hub, techMobile: currentUser.mobile, techName: currentUser.name, remarks });
+// Submit Parts Request — called ONCE, prevents duplicate
+async function submitPartsRequest(ticketId, chassisNo, oem) {
+  if (daSelectedParts.length === 0) { toast('Select at least one part','error'); return; }
+  const btn = document.getElementById('raise-pr-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Submitting...'; }
+
+  const remarks = document.getElementById('pr-remarks')?.value || '';
+  const results = [];
+  for (const p of daSelectedParts) {
+    const r = await api('raisePartsRequest', {
+      ticketId, chassisNo,
+      hub: currentUser.hub,
+      techMobile: currentUser.mobile,
+      techName: currentUser.name,
+      partId: p.partId, partCode: p.partCode,
+      partName: p.partName, category: p.category,
+      qty: p.qty, remarks,
+    });
+    results.push(r);
+  }
+
+  // Update ticket status to Parts Requested
+  await api('updateTicketStatus', { ticketId, status: 'Parts Requested',
+    mobile: currentUser.mobile, name: currentUser.name,
+    remarks: daSelectedParts.length + ' parts requested' });
+
+  const failed = results.filter(r => r.error).length;
+  if (failed > 0) toast(failed + ' parts failed to submit','error');
+  else toast('✅ Parts request submitted! Waiting for approval.','success');
+
+  daSelectedParts = [];
+  openRepairWork(ticketId); // Reload the screen
+}
+
+async function doStartRepair(ticketId, chassisNo) {
+  const res = await api('startRepair', {
+    ticketId, chassisNo, hub: currentUser.hub,
+    techMobile: currentUser.mobile, techName: currentUser.name
+  });
   if (res.error) { toast(res.error,'error'); return; }
-  toast('Repair complete! Moved to QC ✅','success');
+  toast('▶ Repair started!','success');
+  openRepairWork(ticketId); // Reload
+}
+
+async function doCompleteRepair(ticketId, chassisNo) {
+  const remarks = document.getElementById('repair-remarks')?.value || '';
+  if (!remarks.trim()) { toast('Add repair remarks before completing','error'); return; }
+  const res = await api('completeRepair', {
+    ticketId, chassisNo, hub: currentUser.hub,
+    techMobile: currentUser.mobile, techName: currentUser.name, remarks
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('✅ Repair complete! Sent to QC.','success');
   showScreen('repair-queue'); loadRepairQueue();
 }
+
+// Legacy stubs — not used in new flow
+async function startRepairTimer(ticketId, chassisNo) { await doStartRepair(ticketId, chassisNo); }
+async function logRepairParts(ticketId, chassisNo, oem) { toast('Use Parts Request flow','error'); }
+async function completeRepair(ticketId, chassisNo) { await doCompleteRepair(ticketId, chassisNo); }
 
 // ═══════════════════════════════════════════════════════════
 // QC
@@ -1624,28 +2208,76 @@ async function approveInsurance(ticketId, chassisNo, riderId, caseType, hub) {
 // PARTS REQUESTS
 // ═══════════════════════════════════════════════════════════
 async function loadPartsRequests() {
-  const hub = currentUser.role === 'Inventory Manager' ? currentUser.hub : currentUser.hub;
-  const res = await api('getPartsRequests', { hub, status: 'Pending' });
-  const requests = res.requests || [];
-  document.getElementById('pr-content').innerHTML = requests.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No pending parts requests</p>'
-    : requests.map(r => `
-      <div class="ticket-card">
-        <div class="ticket-header"><span class="ticket-id">${r.Request_ID}</span><span class="status-badge s-open">Pending</span></div>
+  const hub = ['Super Admin','Admin','Service Head'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  // Load both Pending and recently decided
+  const [pendRes, allRes] = await Promise.all([
+    api('getPartsRequests', { hub, status: 'Pending' }),
+    api('getPartsRequests', { hub }),
+  ]);
+  const pending = pendRes.requests || [];
+  const all     = (allRes.requests || []).filter(r => r.Status !== 'Pending').slice(0,20);
+
+  const el = document.getElementById('pr-content');
+
+  const pendingHtml = pending.length === 0
+    ? '<p style="text-align:center;color:var(--text2);padding:20px 0">No pending requests ✅</p>'
+    : pending.map(r => `
+      <div class="ticket-card" style="border-color:var(--warning)">
+        <div class="ticket-header">
+          <span class="ticket-id">${r.Request_ID}</span>
+          <span class="status-badge s-open">Pending</span>
+        </div>
         <div class="ticket-title">${r.Part_Name}</div>
-        <div class="ticket-sub">Qty: ${r.Qty_Requested} · Tech: ${r.Tech_Name} · Ticket: ${r.Ticket_ID}</div>
+        <div class="ticket-meta"><span class="tag tag-blue">${r.Part_ID}</span><span class="tag tag-grey">${r.Category||''}</span></div>
+        <div class="ticket-sub">Qty: ${r.Qty_Requested} · Tech: ${r.Tech_Name} · Hub: ${r.Hub}</div>
+        <div class="ticket-sub">Job Card: ${r.Ticket_ID} · ${fmtDate(r.Raised_At)}</div>
+        ${r.Remarks ? `<div style="font-size:12px;color:var(--warning);margin-top:4px">📝 ${r.Remarks}</div>` : ''}
         <div style="display:flex;gap:8px;margin-top:10px">
-          <button class="btn btn-success btn-sm" onclick="decidePartsReq('${r.Request_ID}','Approved')" style="flex:1">✅ Approve</button>
-          <button class="btn btn-danger btn-sm" onclick="decidePartsReq('${r.Request_ID}','Rejected')" style="flex:1">❌ Reject</button>
+          <button class="btn btn-success btn-sm" onclick="decidePartsReq('${r.Request_ID}','Approved','${r.Ticket_ID}')" style="flex:1">✅ Approve & Issue</button>
+          <button class="btn btn-danger btn-sm" onclick="decidePartsReqWithReason('${r.Request_ID}','${r.Ticket_ID}')" style="flex:1">❌ Reject</button>
         </div>
       </div>`
     ).join('');
+
+  const historyHtml = all.length > 0 ? `
+    <div class="section-hdr" style="margin-top:16px">Recently Decided</div>
+    ${all.map(r => `
+      <div class="ticket-card" style="opacity:0.8">
+        <div class="ticket-header">
+          <span class="ticket-id" style="font-size:11px">${r.Request_ID}</span>
+          <span class="status-badge ${r.Status==='Approved'?'s-rfd':'s-closed'}">${r.Status}</span>
+        </div>
+        <div class="ticket-title" style="font-size:13px">${r.Part_Name} ×${r.Qty_Requested}</div>
+        <div class="ticket-sub">${r.Tech_Name} · ${r.Ticket_ID} · ${fmtDate(r.Approved_At)}</div>
+      </div>`).join('')}` : '';
+
+  el.innerHTML = `
+    <div class="section-hdr">Pending Approval (${pending.length})</div>
+    ${pendingHtml}
+    ${historyHtml}`;
 }
 
-async function decidePartsReq(reqId, decision) {
-  const res = await api('approvePartsRequest', { reqId, decision, managerMobile: currentUser.mobile, managerName: currentUser.name });
+async function decidePartsReq(reqId, decision, ticketId) {
+  const res = await api('approvePartsRequest', {
+    reqId, decision,
+    managerMobile: currentUser.mobile, managerName: currentUser.name,
+    ticketId,
+  });
   if (res.error) { toast(res.error,'error'); return; }
-  toast(decision + ' ✅','success');
+  toast(decision === 'Approved' ? '✅ Approved & issued from inventory' : '❌ Rejected','success');
+  loadPartsRequests();
+}
+
+async function decidePartsReqWithReason(reqId, ticketId) {
+  const reason = prompt('Reason for rejection (e.g. Out of stock):');
+  if (reason === null) return;
+  const res = await api('approvePartsRequest', {
+    reqId, decision: 'Rejected', remarks: reason,
+    managerMobile: currentUser.mobile, managerName: currentUser.name,
+    ticketId,
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('Rejected — technician notified','success');
   loadPartsRequests();
 }
 
