@@ -734,6 +734,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
   </div>
 </div>
 
+<!-- QR CODE GENERATOR SCREEN -->
+<div id="qr-screen" class="screen">
+  <div class="topbar">
+    <span class="back" onclick="goHome()">←</span>
+    <h1>📱 QR Codes / Links</h1>
+  </div>
+  <div class="content">
+    <div style="font-size:13px;color:var(--text2);margin-bottom:16px">Share these QR codes or links with riders at each hub. Riders scan and submit their complaint directly.</div>
+    <div id="qr-codes-list"></div>
+  </div>
+</div>
+
 <!-- PARTS REQUESTS SCREEN -->
 <div id="parts-req-screen" class="screen">
   <div class="topbar">
@@ -1034,6 +1046,7 @@ function navTo(screen) {
     case 'repair-queue':   showScreen('repair-queue'); loadRepairQueue(); break;
     case 'repair-monitor': showScreen('repair-monitor-screen'); loadRepairMonitor(); break;
     case 'running-queue':  showScreen('running-queue'); loadRunningQueue(); break;
+    case 'qr-screen':     showScreen('qr-screen'); loadQRCodes(); break;
     case 'qc-screen':      showScreen('qc-screen'); loadQCQueue(); break;
     case 'iot-screen':     showScreen('iot-screen'); loadIOTQueue(); break;
     case 'raise-recovery': showScreen('raise-recovery'); break;
@@ -2530,8 +2543,59 @@ async function submitIOT(ticketId, chassisNo, hub) {
     ].filter(Boolean).join(' | ') || remarks,
   });
   if (res.error) { toast(res.error,'error'); return; }
-  toast(document.getElementById('iot-status').value === 'Working' ? 'RFD Marked! 🚀' : 'IOT Issue logged','success');
-  loadIOTQueue();
+
+  if (iotStatus === 'Working') {
+    toast('✅ IOT OK — Generating closure report...','success');
+    const closeRes = await api('closeTicket', {
+      ticketId, chassisNo,
+      closedBy: currentUser.mobile, closedByName: currentUser.name,
+    });
+    showTicketCloseReport(ticketId, closeRes.success ? closeRes : { totalTime:'N/A', qcFailCount:0, partsUsed:'' });
+  } else {
+    toast('⚠️ IOT Issue logged — vehicle on hold','success');
+    loadIOTQueue();
+  }
+}
+
+function showTicketCloseReport(ticketId, r) {
+  const overlay = document.createElement('div');
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:9999;overflow-y:auto;padding:20px';
+  const partsList = (r.partsUsed||'').split(',').filter(Boolean);
+  overlay.innerHTML = `
+    <div style="max-width:480px;margin:0 auto;background:var(--surface);border-radius:var(--radius);padding:24px">
+      <div style="text-align:center;margin-bottom:20px">
+        <div style="font-size:52px">🚀</div>
+        <div style="font-size:22px;font-weight:800;color:var(--success);margin-top:8px">Vehicle is RFD!</div>
+        <div style="font-size:13px;color:var(--text3);margin-top:4px;font-family:monospace">${ticketId}</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
+        <div style="background:var(--surface2);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--primary)">${r.totalTime||'—'}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">TOTAL TIME</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:${(r.qcFailCount||0)>0?'var(--danger)':'var(--success)'}">${r.qcFailCount||0}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">QC FAILS</div>
+        </div>
+        <div style="background:var(--surface2);border-radius:8px;padding:10px;text-align:center">
+          <div style="font-size:20px;font-weight:800;color:var(--orange)">${partsList.length}</div>
+          <div style="font-size:10px;color:var(--text3);margin-top:2px">PARTS USED</div>
+        </div>
+      </div>
+      ${partsList.length > 0 ? `
+      <div style="background:var(--surface2);border-radius:8px;padding:12px;margin-bottom:12px">
+        <div style="font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px">Parts Used</div>
+        ${partsList.map(p => '<div style="font-size:13px;padding:4px 0;border-bottom:1px solid var(--border)">• '+p.trim()+'</div>').join('')}
+      </div>` : ''}
+      <div style="background:rgba(16,185,129,.1);border:1px solid var(--success);border-radius:8px;padding:12px;margin-bottom:16px">
+        <div style="font-size:12px;color:var(--success);font-weight:600;margin-bottom:4px">✅ Report saved to Repair_Log</div>
+        <div style="font-size:11px;color:var(--text2)">Full timeline · QC history · Parts used · Total time — all in one row in the sheet.</div>
+      </div>
+      <button class="btn btn-success" onclick="this.closest('[style*=fixed]').remove();loadIOTQueue()" style="width:100%;font-size:15px">
+        Done ✓
+      </button>
+    </div>`;
+  document.body.appendChild(overlay);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -2639,34 +2703,137 @@ async function submitRecovery() {
 // RUNNING REPAIR QUEUE (Technician)
 // ═══════════════════════════════════════════════════════════
 async function loadRunningQueue() {
-  const res = await api('getRunningQueue', { hub: currentUser.hub, status: 'Open' });
-  const tickets = res.tickets || [];
-  document.getElementById('rr-queue-content').innerHTML = tickets.length === 0
-    ? '<p style="text-align:center;color:var(--text2);padding:40px">No running repair tickets</p>'
-    : tickets.map(t => `
-      <div class="ticket-card">
-        <div class="ticket-header"><span class="ticket-id">${t.Ticket_ID}</span><span class="status-badge s-open">Open</span></div>
-        <div class="ticket-meta"><span class="tag tag-yellow">Running Repair</span></div>
-        <div class="ticket-title">Rider: ${t.Rider_Name} (${t.Rider_ID})</div>
-        <div class="ticket-sub">Chassis: ${t.Chassis_No}</div>
-        <div class="ticket-sub" style="margin-top:4px;font-weight:600;color:var(--orange)">Issues: ${t.Issues}</div>
-        <div style="margin-top:10px">
-          <textarea id="rr-res-${t.Ticket_ID}" placeholder="Resolution..." style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-size:12px;resize:vertical;margin-bottom:8px"></textarea>
-          <input type="number" id="rr-time-${t.Ticket_ID}" placeholder="Time taken (mins)" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-size:12px;margin-bottom:8px">
-          <button class="btn btn-success btn-sm" onclick="closeRR('${t.Ticket_ID}')" style="width:100%">✅ Close Ticket</button>
+  const el = document.getElementById('rr-queue-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><span>Loading...</span></div>';
+  const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  const [openRes, closedRes] = await Promise.all([
+    api('getRunningQueue', { hub, status: 'Open' }),
+    api('getRunningQueue', { hub, status: 'Closed' }),
+  ]);
+  const open   = openRes.tickets   || [];
+  const closed = (closedRes.tickets || []).slice(0, 20);
+
+  const openHtml = open.length === 0
+    ? '<div style="text-align:center;padding:30px;color:var(--text2)">✅ No open running repairs</div>'
+    : open.map(t => {
+        const issueList = (t.Issues||'').split(',').map(i => i.trim()).filter(Boolean);
+        return `
+        <div class="ticket-card" style="border-color:var(--warning);margin-bottom:12px">
+          <div class="ticket-header">
+            <span class="ticket-id">${t.Ticket_ID}</span>
+            <span class="status-badge s-open">${t.Status||'Open'}</span>
+          </div>
+          <div style="margin:8px 0">
+            <div style="font-size:14px;font-weight:700">${t.Chassis_No||'—'}</div>
+            <div style="font-size:12px;color:var(--text2);margin-top:2px">
+              🧑 ${t.Rider_Name||'—'} · 📱 ${t.Rider_Mobile||'—'} · ID: ${t.Rider_ID||'—'}
+            </div>
+            <div style="font-size:12px;color:var(--text3);margin-top:2px">📍 ${t.Hub||'—'} · 🕐 ${fmtDate(t.Created_At)}</div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+            ${issueList.map(i => '<span class="tag tag-yellow">'+i+'</span>').join('')}
+            ${t.Other_Issue ? '<span class="tag tag-grey">'+t.Other_Issue+'</span>' : ''}
+          </div>
+          ${t.Assigned_To ? '<div style="font-size:12px;color:var(--primary);margin-bottom:8px">🔧 Assigned to: '+t.Assigned_To+'</div>' : ''}
+          <div id="rr-expand-${t.Ticket_ID}" style="display:none">
+            <div class="field-group" style="margin-top:8px">
+              <label>Resolution / What was done</label>
+              <textarea id="rr-res-${t.Ticket_ID}" placeholder="Describe what was fixed..." style="min-height:80px"></textarea>
+            </div>
+            <div class="field-group">
+              <label>Time Taken (minutes)</label>
+              <input type="number" id="rr-time-${t.Ticket_ID}" placeholder="e.g. 15" min="1">
+            </div>
+            <div class="field-group">
+              <label>Parts Used (optional)</label>
+              <input type="text" id="rr-parts-${t.Ticket_ID}" placeholder="e.g. Brake Shoe x1, Tyre Tube x1">
+            </div>
+            <button class="btn btn-success" onclick="closeRR('${t.Ticket_ID}')" style="width:100%">✅ Close & Save</button>
+          </div>
+          <button class="btn btn-primary btn-sm" onclick="toggleRR('${t.Ticket_ID}')" style="width:100%">
+            🔧 Attend & Close
+          </button>
+        </div>`;
+      }).join('');
+
+  const closedHtml = closed.length === 0 ? '' : `
+    <div class="section-hdr" style="margin-top:16px">Recently Closed (${closed.length})</div>
+    ${closed.map(t => `
+      <div style="background:var(--surface2);border-radius:var(--radius);padding:10px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-size:12px;font-weight:700">${t.Chassis_No||'—'} · ${t.Rider_Name||'—'}</div>
+          <div style="font-size:11px;color:var(--text3)">${(t.Issues||'').slice(0,50)}</div>
+          <div style="font-size:11px;color:var(--text2);margin-top:2px">✅ ${t.Resolution||'Closed'} · ${t.Time_Taken_Mins||'?'} mins</div>
+          <div style="font-size:10px;color:var(--text3)">${fmtDate(t.Closed_At)}</div>
         </div>
-      </div>`
-    ).join('');
+        <span class="tag tag-green" style="flex-shrink:0;margin-left:8px">Closed</span>
+      </div>`).join('')}`;
+
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div>
+        <div style="font-weight:700">${open.length} Open · ${closed.length} Recent</div>
+        <div style="font-size:11px;color:var(--text3)">Tap a ticket to attend & close</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="loadRunningQueue()">🔄</button>
+    </div>
+    ${openHtml}${closedHtml}`;
+}
+
+function toggleRR(ticketId) {
+  const el = document.getElementById('rr-expand-'+ticketId);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 async function closeRR(ticketId) {
-  const resolution = document.getElementById(`rr-res-${ticketId}`)?.value;
-  const timeTaken  = document.getElementById(`rr-time-${ticketId}`)?.value;
+  const resolution = document.getElementById('rr-res-'+ticketId)?.value?.trim();
+  const timeTaken  = document.getElementById('rr-time-'+ticketId)?.value;
+  const partsUsed  = document.getElementById('rr-parts-'+ticketId)?.value?.trim();
   if (!resolution) { toast('Enter resolution','error'); return; }
-  const res = await api('closeRunningRepair', { ticketId, resolution, timeTaken, techMobile: currentUser.mobile });
+  if (!timeTaken)  { toast('Enter time taken','error'); return; }
+  const res = await api('closeRunningRepair', {
+    ticketId, resolution, timeTaken, partsUsed: partsUsed||'',
+    techMobile: currentUser.mobile, techName: currentUser.name,
+  });
   if (res.error) { toast(res.error,'error'); return; }
-  toast('Ticket closed ✅','success');
+  toast('✅ Running repair closed!','success');
   loadRunningQueue();
+}
+
+// ── QR CODE GENERATOR ────────────────────────────────────────
+function loadQRCodes() {
+  const baseUrl = window.location.href.split('?')[0];
+  const hubs = ['Indirapuram','Chhatarpur','Nangli','Gurgaon'];
+  const el = document.getElementById('qr-codes-list');
+
+  el.innerHTML = hubs.map(hub => {
+    const url = baseUrl + '?hub=' + encodeURIComponent(hub);
+    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(url);
+    return `
+      <div style="background:var(--surface);border-radius:var(--radius);padding:16px;margin-bottom:16px;border:1px solid var(--border)">
+        <div style="font-size:16px;font-weight:700;margin-bottom:4px">📍 ${hub}</div>
+        <div style="display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap">
+          <div style="background:white;padding:8px;border-radius:8px;flex-shrink:0">
+            <img src="${qrUrl}" width="160" height="160" alt="QR ${hub}" style="display:block">
+          </div>
+          <div style="flex:1;min-width:200px">
+            <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Rider scans QR → submits complaint directly</div>
+            <div style="background:var(--surface2);border-radius:8px;padding:10px;font-size:11px;word-break:break-all;color:var(--primary);margin-bottom:10px">${url}</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn btn-primary btn-sm" onclick="navigator.clipboard.writeText('${url}').then(()=>toast('Link copied!','success'))">
+                📋 Copy Link
+              </button>
+              <a href="${qrUrl}" download="TriEV_QR_${hub}.png" class="btn btn-ghost btn-sm">
+                ⬇️ Download QR
+              </a>
+              <a href="${url}" target="_blank" class="btn btn-ghost btn-sm">
+                🔗 Open Form
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 }
 
 // ═══════════════════════════════════════════════════════════
