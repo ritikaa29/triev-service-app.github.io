@@ -11,7 +11,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#1a1f2e">
 <title>TriEV Service App</title>
-<link rel="manifest" href="manifest.json">
+<!-- manifest removed to avoid 404 -->
 <style>
 *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
 :root{
@@ -1751,8 +1751,28 @@ async function loadRepairQueue() {
 
   let res;
   if (isTechOnly) {
-    // Plain technician — ONLY their own assigned tickets, nothing else
-    res = await api('getMyRepairs', { mobile: currentUser.mobile, name: currentUser.name });
+    // Strategy: get ALL hub tickets and filter client-side
+    // This is the most reliable approach - no server-side status filter issues
+    const TECH_ACTIVE = ['Assigned','Parts Requested','Parts Approved','In Repair','QC Failed - Rework'];
+    const myMobile = String(currentUser.mobile).trim();
+    const myName   = String(currentUser.name).trim();
+
+    const hubRes = await api('getDamageTickets', { hub: currentUser.hub });
+    const allHubTickets = hubRes.tickets || [];
+
+    const myTickets = allHubTickets.filter(t => {
+      // Check if this ticket belongs to this technician
+      const assignedTo   = String(t.Assigned_To || '').trim();
+      const assignedName = String(t.Assigned_Tech_Name || '').trim();
+      const status       = String(t.Status || '').trim();
+      const isMyTicket   = assignedTo === myMobile ||
+                           assignedName === myName ||
+                           assignedTo === myName ||
+                           assignedName === myMobile;
+      return isMyTicket && TECH_ACTIVE.includes(status);
+    });
+
+    res = { tickets: myTickets };
   } else if (isLeadManager) {
     // Lead/managers see all active repairs across their hub
     const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
@@ -2100,6 +2120,53 @@ async function completeRepair(ticketId, chassisNo) { await doCompleteRepair(tick
 let qcExtraParts = [];
 let qcCustomItems = [];
 
+async function submitQCFailReassign(ticketId, chassisNo, hub) {
+  const state = window.qcState || [];
+  const allItems = [...QC_CHECKLIST, ...qcCustomItems];
+  const remarks = document.getElementById('qc-remarks')?.value || '';
+  if (!remarks.trim()) { toast('Add remarks before reassigning','error'); return; }
+
+  // First submit as fail
+  const checklistArr = allItems.map((item,i) => ({ item, result: state[i]||'na' }));
+  const res = await api('submitQC', {
+    ticketId, chassisNo, hub,
+    qcMobile: currentUser.mobile, qcName: currentUser.name,
+    checklistJson: JSON.stringify(checklistArr),
+    overallStatus: 'Fail', remarks,
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+
+  // Then show technician dropdown for reassignment
+  document.getElementById('qc-form-content').innerHTML = `
+    <div style="padding:20px">
+      <div style="color:var(--danger);font-weight:700;font-size:16px;margin-bottom:12px">❌ QC Failed — Reassign to Tech</div>
+      <div class="field-group">
+        <label>Select Technician for Rework</label>
+        <select id="qc-reassign-tech" style="width:100%;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-size:13px"
+          onfocus="loadDetailTechs('${hub}')">
+          <option value="">👆 Tap to load technicians</option>
+        </select>
+      </div>
+      <button class="btn btn-warning" onclick="doQCReassign('${ticketId}','${chassisNo}','${hub}')">🔄 Reassign</button>
+      <button class="btn btn-ghost" onclick="showScreen('qc-screen');loadQCQueue()" style="margin-top:8px">Skip (keep current tech)</button>
+    </div>`;
+}
+
+async function doQCReassign(ticketId, chassisNo, hub) {
+  const sel = document.getElementById('qc-reassign-tech');
+  if (!sel || !sel.value) { toast('Select a technician','error'); return; }
+  const [techMobile, techName] = sel.value.split('|');
+  const res = await api('assignRepair', {
+    ticketId, chassisNo, hub,
+    leadMobile: currentUser.mobile, leadName: currentUser.name,
+    techMobile, techName, isReassign: true,
+    reassignReason: 'QC Failed — reassigned for rework',
+  });
+  if (res.error) { toast(res.error,'error'); return; }
+  toast('🔄 Reassigned to ' + techName + ' for rework','success');
+  showScreen('qc-screen'); loadQCQueue();
+}
+
 async function loadQCQueue() {
   document.getElementById('qc-queue-list').innerHTML =
     '<div class="loading"><div class="spinner"></div><span>Loading QC queue...</span></div>';
@@ -2251,10 +2318,15 @@ async function openQCForm(ticketId) {
 
     <div style="display:flex;gap:10px;margin-top:8px">
       <button class="btn btn-success" onclick="submitQC('${ticketId}','${t.Chassis_No}','Pass')" style="flex:1">
-        ✅ QC Pass → Send to IOT
+        ✅ QC Pass → IOT
       </button>
       <button class="btn btn-danger" onclick="submitQC('${ticketId}','${t.Chassis_No}','Fail')" style="flex:1">
-        ❌ QC Fail → Back to Tech
+        ❌ Fail → Back to Tech
+      </button>
+    </div>
+    <div style="margin-top:8px">
+      <button class="btn btn-warning" onclick="submitQCFailReassign('${ticketId}','${t.Chassis_No}','${t.Hub}')" style="width:100%">
+        🔄 Fail & Reassign to Different Tech
       </button>
     </div>
   `;
