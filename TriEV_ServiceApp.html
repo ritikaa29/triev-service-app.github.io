@@ -1753,91 +1753,118 @@ async function rmShowTickets(status, hub, fromDate, toDate) {
 }
 
 
+// Store all tickets for client-side search/filter
+let _allRepairTickets = [];
+
 async function loadRepairQueue() {
-  document.getElementById('repair-queue-content').innerHTML =
-    '<div class="loading"><div class="spinner"></div><span>Loading repairs...</span></div>';
+  const el = document.getElementById('repair-queue-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div><span>Loading repairs...</span></div>';
 
   const TECH_ONLY_ROLES = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
-  const LEAD_MANAGER_ROLES = ['Lead Technician','Hub Manager','Service Head','Admin','Super Admin','General Manager','City Ops'];
-  const isTechOnly = TECH_ONLY_ROLES.includes(currentUser.role);
-  const isLeadManager = LEAD_MANAGER_ROLES.some(r => currentUser.role === r);
+  const isTechOnly = TECH_ONLY_ROLES.includes(currentUser.role) ||
+    (currentUser.role.toLowerCase().includes('technician') && !['Lead Technician','QC Technician'].includes(currentUser.role));
 
-  let res;
+  const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
+  const hubRes = await api('getDamageTickets', { hub });
+  if (hubRes.error) {
+    el.innerHTML = '<div style="padding:20px;text-align:center"><div style="color:var(--danger);margin-bottom:12px">❌ ' + hubRes.error + '</div><button class="btn btn-primary btn-sm" onclick="loadRepairQueue()">🔄 Retry</button></div>';
+    return;
+  }
+
+  let tickets = hubRes.tickets || [];
+
+  // For tech-only: filter to only their own tickets
   if (isTechOnly) {
-    // Strategy: get ALL hub tickets and filter client-side
-    // This is the most reliable approach - no server-side status filter issues
     const TECH_ACTIVE = ['Assigned','Parts Requested','Parts Approved','In Repair','QC Failed - Rework'];
     const myMobile = String(currentUser.mobile).trim();
     const myName   = String(currentUser.name).trim();
-
-    const hubRes = await api('getDamageTickets', { hub: currentUser.hub });
-    const allHubTickets = hubRes.tickets || [];
-
-    const myTickets = allHubTickets.filter(t => {
-      const status = String(t.Status || '').trim();
+    tickets = tickets.filter(t => {
+      const status = String(t.Status||'').trim();
       if (!TECH_ACTIVE.includes(status)) return false;
-
-      // Check every field in the ticket for mobile or name match
-      const assignedTo   = String(t.Assigned_To   || '').trim();
-      const assignedName = String(t.Assigned_Tech_Name || '').trim();
-
-      return assignedTo   === myMobile ||
-             assignedTo   === myName   ||
-             assignedName === myMobile ||
-             assignedName === myName   ||
-             (myMobile.length > 5 && assignedTo.replace(/\s/g,'').includes(myMobile)) ||
-             (myName.length > 2   && assignedName.toLowerCase().includes(myName.toLowerCase().split(' ')[0]));
+      const aTo   = String(t.Assigned_To||'').trim();
+      const aName = String(t.Assigned_Tech_Name||'').trim();
+      return aTo===myMobile || aTo===myName || aName===myMobile || aName===myName ||
+             (myMobile.length>5 && aTo.replace(/\s/g,'').includes(myMobile)) ||
+             (myName.length>2 && aName.toLowerCase().includes(myName.toLowerCase().split(' ')[0]));
     });
-
-    res = { tickets: myTickets };
-  } else if (isLeadManager) {
-    // Lead/managers see all active repairs across their hub
-    const hub = ['Super Admin','Admin','Service Head','General Manager','City Ops'].includes(currentUser.role) ? 'ALL' : currentUser.hub;
-    res = await api('getDamageTickets', { hub });
-    const activeStatuses = ['Assigned','Parts Requested','Parts Approved','In Repair'];
-    res.tickets = (res.tickets||[]).filter(t => activeStatuses.includes(t.Status));
-  } else {
-    res = await api('getMyRepairs', { mobile: currentUser.mobile, name: currentUser.name });
   }
 
-  if (res.error) {
-    document.getElementById('repair-queue-content').innerHTML =
-      `<div style="padding:20px;text-align:center">
-        <div style="color:var(--danger);margin-bottom:12px">❌ ${res.error}</div>
-        <button class="btn btn-primary btn-sm" onclick="loadRepairQueue()">🔄 Retry</button>
-      </div>`;
-    return;
-  }
-  const tickets = res.tickets || [];
-  document.getElementById('repair-queue-content').innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-      <span style="font-size:12px;color:var(--text2)">${isTechOnly ? 'Your assigned tickets' : 'All active repairs'} · ${tickets.length}</span>
-      <button class="btn btn-ghost btn-sm" onclick="loadRepairQueue()">🔄</button>
+  _allRepairTickets = tickets;
+  renderRepairQueue();
+}
+
+function renderRepairQueue() {
+  const el = document.getElementById('repair-queue-content');
+  const searchQ  = (document.getElementById('rq-search')?.value||'').toLowerCase().trim();
+  const statusF  = document.getElementById('rq-status-filter')?.value || 'ALL';
+
+  const TECH_ONLY_ROLES = ['Core Technician','Technician','Running Repair Technician','QC Technician'];
+  const isTechOnly = TECH_ONLY_ROLES.includes(currentUser.role) ||
+    (currentUser.role.toLowerCase().includes('technician') && !['Lead Technician','QC Technician'].includes(currentUser.role));
+
+  let tickets = _allRepairTickets;
+  if (statusF !== 'ALL') tickets = tickets.filter(t => t.Status === statusF);
+  if (searchQ) tickets = tickets.filter(t =>
+    (t.Chassis_No||'').toLowerCase().includes(searchQ) ||
+    (t.Ticket_ID||'').toLowerCase().includes(searchQ) ||
+    (t.Rider_ID||'').toLowerCase().includes(searchQ) ||
+    (t.Assigned_Tech_Name||'').toLowerCase().includes(searchQ) ||
+    (t.Assigned_To||'').toLowerCase().includes(searchQ)
+  );
+
+  const statusColors = {
+    'Open':'tag-grey', 'Assigned':'tag-blue',
+    'Parts Requested':'tag-yellow', 'Parts Approved':'tag-green',
+    'In Repair':'tag-orange', 'QC Pending':'tag-purple',
+    'QC Failed - Rework':'tag-red', 'IOT Check Pending':'tag-teal',
+    'IOT Issue - Hold':'tag-red', 'RFD':'tag-green',
+  };
+
+  // Count by status for filter badges
+  const counts = {};
+  _allRepairTickets.forEach(t => { counts[t.Status] = (counts[t.Status]||0)+1; });
+
+  el.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;gap:8px;margin-bottom:8px;align-items:center">
+        <input type="search" id="rq-search" placeholder="🔍 Search chassis / ticket / rider / tech..."
+          oninput="renderRepairQueue()"
+          style="flex:1;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:13px">
+        <button class="btn btn-ghost btn-sm" onclick="loadRepairQueue()" style="flex-shrink:0">🔄</button>
+      </div>
+      <select id="rq-status-filter" onchange="renderRepairQueue()"
+        style="width:100%;background:var(--surface2);border:1.5px solid var(--border);border-radius:8px;padding:9px;color:var(--text);font-size:13px">
+        <option value="ALL">All Statuses (${_allRepairTickets.length})</option>
+        ${['Open','Assigned','Parts Requested','Parts Approved','In Repair',
+           'QC Pending','QC Failed - Rework','IOT Check Pending','IOT Issue - Hold','RFD']
+          .filter(s => counts[s])
+          .map(s => '<option value="'+s+'">' + s + ' (' + (counts[s]||0) + ')</option>').join('')}
+      </select>
+    </div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+      ${isTechOnly ? 'Your tickets' : 'All tickets'} · Showing ${tickets.length} of ${_allRepairTickets.length}
     </div>` +
     (tickets.length === 0
-      ? '<p style="text-align:center;color:var(--text2);padding:40px">No active repair tickets</p>'
+      ? '<div style="text-align:center;padding:40px;color:var(--text2)">No tickets found</div>'
       : tickets.map(t => {
-          const statusColors = {
-            'Assigned':              'tag-blue',
-            'Parts Requested':       'tag-yellow',
-            'Parts Approved':        'tag-green',
-            'In Repair':             'tag-orange',
-          };
           const sc = statusColors[t.Status] || 'tag-grey';
+          const isQCFail = t.Status === 'QC Failed - Rework';
+          const isRFD    = t.Status === 'RFD';
           return `
-          <div class="ticket-card" onclick="openRepairWork('${t.Ticket_ID}')">
+          <div class="ticket-card" style="${isQCFail?'border-color:var(--danger);':''}${isRFD?'border-color:var(--success);opacity:.85;':''}" onclick="openRepairWork('${t.Ticket_ID}')">
             <div class="ticket-header">
               <span class="ticket-id">${t.Ticket_ID}</span>
               <span class="tag ${sc}" style="font-size:11px;padding:3px 10px">${t.Status}</span>
             </div>
+            ${isQCFail ? '<div style="font-size:11px;color:var(--danger);margin-bottom:4px">⚠️ QC Failed — needs rework</div>' : ''}
             <div class="ticket-meta">
               <span class="tag tag-blue">${t.OEM}</span>
               <span class="tag tag-purple">${t.Damage_Category||'—'}</span>
               <span class="tag tag-grey">${t.Hub}</span>
             </div>
             <div class="ticket-title">${t.Chassis_No}</div>
-            <div class="ticket-sub">Assigned To: ${t.Assigned_Tech_Name || getTechNameFromMobile(t.Assigned_To) || t.Assigned_To || '—'} · Rider: ${t.Rider_ID}</div>
-            <div class="ticket-sub" style="margin-top:2px">${fmtDate(t.Assigned_At)}</div>
+            <div class="ticket-sub">🔧 ${t.Assigned_Tech_Name||t.Assigned_To||'—'} · Rider: ${t.Rider_ID||'—'}</div>
+            <div class="ticket-sub" style="margin-top:2px">📅 ${fmtDate(t.Submitted_At)}</div>
           </div>`;
         }).join(''));
 }
