@@ -2044,13 +2044,13 @@ async function openRepairWork(ticketId) {
       <button class="btn btn-success" onclick="doCompleteRepair('${ticketId}','${t.Chassis_No}')">✅ Mark Complete → Send to QC</button>
     </div>` : '';
 
-  // ── MANAGER: Generate Repair_Log report for RFD tickets ──
+  // RFD tickets — show summary info only (report auto-generated on IOT pass)
   const canGenReport = ['Super Admin','Admin','Service Head','Hub Manager','General Manager','City Ops'].includes(currentUser.role) && t.Status === 'RFD';
   const genReportHtml = canGenReport ? `
     <div class="detail-section" style="border-color:var(--success)">
       <h3 style="color:var(--success)">🚀 Vehicle is RFD</h3>
-      <p style="font-size:13px;color:var(--text2);margin:8px 0">Generate the final closure report — writes one complete row to Repair_Log with all timestamps, QC history, parts used and total time.</p>
-      <button class="btn btn-success" onclick="doGenReport('${ticketId}','${t.Chassis_No}')">📊 Generate & Save Repair Log</button>
+      <p style="font-size:13px;color:var(--text2);margin:8px 0">Repair log automatically saved to sheet when IOT check was submitted.</p>
+      <button class="btn btn-ghost btn-sm" onclick="doGenReport('${ticketId}','${t.Chassis_No}')">🔄 Re-generate Report</button>
     </div>` : '';
 
   // ── TECH: QC FAILED REWORK — start rework directly (no new parts request needed) ──
